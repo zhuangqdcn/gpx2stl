@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,6 +38,11 @@ SUPPORTED_DEM_TYPES = {
     "ANADEM",
     "GEDTM30",
 }
+COPERNICUS_TILE_PATTERN = re.compile(
+    r"Copernicus_DSM_COG_(?:10|30)_([NS])(\d{2})_00_([EW])(\d{3})_00_DEM"
+    r"\.(?:tif|tiff)",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -271,6 +277,15 @@ def _raster_geographic_bounds(path: Path) -> GeographicBounds:
         raise Gpx2StlError(f"Unable to inspect local DEM '{path}': {exc}") from exc
 
 
+def _copernicus_geographic_bounds(path: Path) -> GeographicBounds | None:
+    match = COPERNICUS_TILE_PATTERN.fullmatch(path.name)
+    if match is None:
+        return None
+    latitude = int(match.group(2)) * (-1 if match.group(1).upper() == "S" else 1)
+    longitude = int(match.group(4)) * (-1 if match.group(3).upper() == "W" else 1)
+    return GeographicBounds(latitude, latitude + 1, longitude, longitude + 1)
+
+
 def _bounds_intersect(first: GeographicBounds, second: GeographicBounds) -> bool:
     return not (
         first.east < second.west
@@ -294,7 +309,7 @@ def load_local_dem(
 
     selected: list[Path] = []
     for path in iter_local_geotiffs(topo_dir):
-        raster_bounds = _raster_geographic_bounds(path)
+        raster_bounds = _copernicus_geographic_bounds(path) or _raster_geographic_bounds(path)
         if any(_bounds_intersect(raster_bounds, item) for item in bounds):
             selected.append(path)
     if not selected:

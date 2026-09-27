@@ -14,6 +14,7 @@ from gpx2stl.dem import (
     DemTile,
     GeographicBounds,
     OpenTopographyClient,
+    _copernicus_geographic_bounds,
     choose_dem_type,
     load_local_dem,
 )
@@ -62,6 +63,13 @@ def test_dem_selection() -> None:
     assert choose_dem_type(normal, None) == "SRTMGL1"
     assert choose_dem_type(polar, None) == "COP30"
     assert choose_dem_type(normal, "COP90") == "COP90"
+
+
+def test_copernicus_filename_provides_tile_bounds() -> None:
+    path = Path("Copernicus_DSM_COG_10_S07_00_W123_00_DEM.tif")
+    assert _copernicus_geographic_bounds(path) == GeographicBounds(
+        -7, -6, -123, -122
+    )
 
 
 def test_dem_tile_bilinear_sampling() -> None:
