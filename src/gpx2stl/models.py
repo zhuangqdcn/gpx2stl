@@ -9,6 +9,7 @@ from numpy.typing import NDArray
 from pyproj import Transformer
 
 Shape = Literal["square", "circle"]
+TopoSource = Literal["auto", "online", "local"]
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,9 @@ class Config:
     max_size: float = 200.0
     terrain_height: float = 20.0
     base_height: float = 2.0
+    topo_source: TopoSource = "auto"
+    topo_file: Path | None = None
+    topo_dir: Path = Path("asset")
     dem_type: str | None = None
     api_key: str | None = None
     force: bool = False

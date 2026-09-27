@@ -1,0 +1,91 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import numpy as np
+import pytest
+import rasterio
+from rasterio.transform import from_bounds
+
+import gpx2stl.pipeline
+from gpx2stl.dem import DemSource, GeographicBounds
+from gpx2stl.errors import Gpx2StlError
+from gpx2stl.models import Config, TopoSource
+from gpx2stl.pipeline import convert, resolve_dem
+
+
+def _config(tmp_path: Path, source: TopoSource) -> Config:
+    return Config(
+        gpx_file=tmp_path / "route.gpx",
+        output=tmp_path / "route.3mf",
+        topo_source=source,
+        topo_dir=tmp_path / "asset",
+    )
+
+
+def test_conversion_uses_local_file_without_network(
+    simple_gpx: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    topo_file = tmp_path / "terrain.tif"
+    with rasterio.open(
+        topo_file,
+        "w",
+        driver="GTiff",
+        width=8,
+        height=8,
+        count=1,
+        dtype="float32",
+        crs="EPSG:4326",
+        transform=from_bounds(-123.0, 36.0, -121.0, 38.0, 8, 8),
+    ) as dataset:
+        dataset.write(np.arange(64, dtype=np.float32).reshape(8, 8), 1)
+
+    def fail_online(*args, **kwargs):
+        raise AssertionError("OpenTopography must not be called for local terrain")
+
+    monkeypatch.setattr(gpx2stl.pipeline.OpenTopographyClient, "fetch", fail_online)
+    output = tmp_path / "local.3mf"
+    convert(
+        Config(
+            gpx_file=simple_gpx,
+            output=output,
+            topo_source="local",
+            topo_file=topo_file,
+            topo_dir=tmp_path / "asset",
+            max_size=20.0,
+        )
+    )
+    assert output.is_file()
+
+
+def test_auto_prefers_local_without_api_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    expected = DemSource(())
+    monkeypatch.setattr(gpx2stl.pipeline, "load_local_dem", lambda *args: expected)
+    assert resolve_dem(
+        _config(tmp_path, "auto"),
+        (GeographicBounds(0, 1, 0, 1),),
+    ) is expected
+
+
+def test_local_fails_without_intersecting_raster(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(gpx2stl.pipeline, "load_local_dem", lambda *args: None)
+    with pytest.raises(Gpx2StlError, match="No local GeoTIFF"):
+        resolve_dem(
+            _config(tmp_path, "local"),
+            (GeographicBounds(0, 1, 0, 1),),
+        )
+
+
+def test_auto_without_local_or_key_reports_online_requirement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(gpx2stl.pipeline, "load_local_dem", lambda *args: None)
+    with pytest.raises(Gpx2StlError, match="requires --api-key"):
+        resolve_dem(
+            _config(tmp_path, "auto"),
+            (GeographicBounds(0, 1, 0, 1),),
+        )

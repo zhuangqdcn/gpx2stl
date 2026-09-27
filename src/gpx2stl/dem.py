@@ -3,12 +3,15 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 import rasterio
 import requests
 from numpy.typing import NDArray
+from pyproj import CRS, Transformer
 from rasterio.io import MemoryFile
+from rasterio.warp import transform_bounds
 from scipy.ndimage import distance_transform_edt
 
 from gpx2stl.errors import Gpx2StlError
@@ -49,80 +52,135 @@ class DemTile:
     data: NDArray[np.float64]
     transform: rasterio.Affine
     bounds: rasterio.coords.BoundingBox
+    crs: CRS
+    source: str
 
     @classmethod
     def from_bytes(cls, content: bytes) -> DemTile:
         try:
             with MemoryFile(content) as memory, memory.open() as dataset:
-                band = dataset.read(1, masked=True).astype(np.float64)
-                data = np.asarray(band.filled(np.nan), dtype=np.float64)
-                if dataset.crs is None or dataset.crs.to_epsg() != 4326:
+                if dataset.crs is None or CRS.from_user_input(dataset.crs).to_epsg() != 4326:
                     raise Gpx2StlError("OpenTopography returned a DEM that is not WGS84.")
-                return cls(data, dataset.transform, dataset.bounds)
+                return cls._from_dataset(dataset, "OpenTopography response")
         except (rasterio.errors.RasterioError, ValueError) as exc:
             if isinstance(exc, Gpx2StlError):
                 raise
             raise Gpx2StlError("OpenTopography returned an invalid GeoTIFF.") from exc
 
-    def sample(self, longitude: NDArray[np.float64], latitude: NDArray[np.float64]) -> NDArray[np.float64]:
-        inverse = ~self.transform
-        column, row = inverse @ (longitude, latitude)
-        column = np.asarray(column, dtype=np.float64)
-        row = np.asarray(row, dtype=np.float64)
-        c0 = np.floor(column - 0.5).astype(int)
-        r0 = np.floor(row - 0.5).astype(int)
-        dc = column - (c0 + 0.5)
-        dr = row - (r0 + 0.5)
-        result = np.full(longitude.shape, np.nan, dtype=np.float64)
-        valid = (
-            (c0 >= 0)
-            & (r0 >= 0)
-            & (c0 + 1 < self.data.shape[1])
-            & (r0 + 1 < self.data.shape[0])
+    @classmethod
+    def from_path(cls, path: Path) -> DemTile:
+        try:
+            with rasterio.open(path) as dataset:
+                return cls._from_dataset(dataset, str(path))
+        except Gpx2StlError:
+            raise
+        except (OSError, rasterio.errors.RasterioError, ValueError) as exc:
+            raise Gpx2StlError(f"Unable to read local DEM '{path}': {exc}") from exc
+
+    @classmethod
+    def _from_dataset(cls, dataset, source: str) -> DemTile:
+        if dataset.count < 1:
+            raise Gpx2StlError(f"DEM '{source}' has no elevation band.")
+        if dataset.crs is None:
+            raise Gpx2StlError(f"DEM '{source}' has no coordinate reference system.")
+        if dataset.transform.is_identity:
+            raise Gpx2StlError(f"DEM '{source}' has no usable geotransform.")
+        band = dataset.read(1, masked=True).astype(np.float64)
+        data = np.asarray(band.filled(np.nan), dtype=np.float64)
+        if not np.any(np.isfinite(data)):
+            raise Gpx2StlError(f"DEM '{source}' contains no finite elevation values.")
+        return cls(
+            data=data,
+            transform=dataset.transform,
+            bounds=dataset.bounds,
+            crs=CRS.from_user_input(dataset.crs),
+            source=source,
         )
-        if not np.any(valid):
+
+    def _pixel_coordinates(
+        self, longitude: NDArray[np.float64], latitude: NDArray[np.float64]
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        transformer = Transformer.from_crs("EPSG:4326", self.crs, always_xy=True)
+        x, y = transformer.transform(longitude, latitude)
+        inverse = ~self.transform
+        column, row = inverse @ (x, y)
+        return (
+            np.asarray(column, dtype=np.float64),
+            np.asarray(row, dtype=np.float64),
+        )
+
+    def covers(
+        self, longitude: NDArray[np.float64], latitude: NDArray[np.float64]
+    ) -> NDArray[np.bool_]:
+        column, row = self._pixel_coordinates(longitude, latitude)
+        tolerance = 1e-7
+        return (
+            np.isfinite(column)
+            & np.isfinite(row)
+            & (column >= -tolerance)
+            & (row >= -tolerance)
+            & (column <= self.data.shape[1] + tolerance)
+            & (row <= self.data.shape[0] + tolerance)
+        )
+
+    def sample(
+        self, longitude: NDArray[np.float64], latitude: NDArray[np.float64]
+    ) -> NDArray[np.float64]:
+        column, row = self._pixel_coordinates(longitude, latitude)
+        covered = self.covers(longitude, latitude)
+        result = np.full(longitude.shape, np.nan, dtype=np.float64)
+        if not np.any(covered):
             return result
-        rr = r0[valid]
-        cc = c0[valid]
-        dx = dc[valid]
-        dy = dr[valid]
+        sample_column = np.clip(column[covered] - 0.5, 0.0, self.data.shape[1] - 1.0)
+        sample_row = np.clip(row[covered] - 0.5, 0.0, self.data.shape[0] - 1.0)
+        c0 = np.floor(sample_column).astype(int)
+        r0 = np.floor(sample_row).astype(int)
+        c1 = np.minimum(c0 + 1, self.data.shape[1] - 1)
+        r1 = np.minimum(r0 + 1, self.data.shape[0] - 1)
+        dx = sample_column - c0
+        dy = sample_row - r0
         values = np.column_stack(
             (
-                self.data[rr, cc],
-                self.data[rr, cc + 1],
-                self.data[rr + 1, cc],
-                self.data[rr + 1, cc + 1],
+                self.data[r0, c0],
+                self.data[r0, c1],
+                self.data[r1, c0],
+                self.data[r1, c1],
             )
         )
         weights = np.column_stack(
             ((1 - dx) * (1 - dy), dx * (1 - dy), (1 - dx) * dy, dx * dy)
         )
         complete = np.all(np.isfinite(values), axis=1)
-        sampled = np.full(len(rr), np.nan, dtype=np.float64)
+        sampled = np.full(len(c0), np.nan, dtype=np.float64)
         sampled[complete] = np.sum(values[complete] * weights[complete], axis=1)
-        result[valid] = sampled
+        result[covered] = sampled
         return result
 
 
 @dataclass(frozen=True)
 class DemSource:
     tiles: tuple[DemTile, ...]
+    require_complete_coverage: bool = False
+    description: str = "DEM"
 
     def sample_lonlat(
         self, longitude: NDArray[np.float64], latitude: NDArray[np.float64]
     ) -> NDArray[np.float64]:
         result = np.full(longitude.shape, np.nan, dtype=np.float64)
+        covered = np.zeros(longitude.shape, dtype=np.bool_)
         for tile in self.tiles:
             adjusted = ((longitude + 180.0) % 360.0) - 180.0
-            inside = (
-                np.isnan(result)
-                & (adjusted >= tile.bounds.left - 1e-9)
-                & (adjusted <= tile.bounds.right + 1e-9)
-                & (latitude >= tile.bounds.bottom - 1e-9)
-                & (latitude <= tile.bounds.top + 1e-9)
-            )
+            tile_coverage = tile.covers(adjusted, latitude)
+            covered |= tile_coverage
+            inside = np.isnan(result) & tile_coverage
             if np.any(inside):
                 result[inside] = tile.sample(adjusted[inside], latitude[inside])
+        if self.require_complete_coverage and not np.all(covered):
+            missing = int(np.count_nonzero(~covered))
+            raise Gpx2StlError(
+                f"Local DEM coverage is incomplete for the printable footprint "
+                f"({missing} sampled locations are outside {self.description})."
+            )
         return result
 
     def sample_projected(
@@ -176,6 +234,76 @@ def request_bounds(footprint: Footprint, route: ProjectedRoute) -> tuple[Geograp
             GeographicBounds(south, north, -180.0, east - 360.0),
         )
     return (GeographicBounds(south, north, west, east),)
+
+
+def iter_local_geotiffs(directory: Path) -> tuple[Path, ...]:
+    if not directory.is_dir():
+        return ()
+    return tuple(
+        sorted(
+            (
+                path
+                for path in directory.rglob("*")
+                if path.is_file() and path.suffix.lower() in {".tif", ".tiff"}
+            ),
+            key=lambda path: str(path).casefold(),
+        )
+    )
+
+
+def _raster_geographic_bounds(path: Path) -> GeographicBounds:
+    try:
+        with rasterio.open(path) as dataset:
+            if dataset.crs is None:
+                raise Gpx2StlError(f"DEM '{path}' has no coordinate reference system.")
+            if dataset.transform.is_identity:
+                raise Gpx2StlError(f"DEM '{path}' has no usable geotransform.")
+            west, south, east, north = transform_bounds(
+                dataset.crs,
+                "EPSG:4326",
+                *dataset.bounds,
+                densify_pts=21,
+            )
+            return GeographicBounds(south, north, west, east)
+    except Gpx2StlError:
+        raise
+    except (OSError, rasterio.errors.RasterioError, ValueError) as exc:
+        raise Gpx2StlError(f"Unable to inspect local DEM '{path}': {exc}") from exc
+
+
+def _bounds_intersect(first: GeographicBounds, second: GeographicBounds) -> bool:
+    return not (
+        first.east < second.west
+        or first.west > second.east
+        or first.north < second.south
+        or first.south > second.north
+    )
+
+
+def load_local_dem(
+    topo_file: Path | None,
+    topo_dir: Path,
+    bounds: tuple[GeographicBounds, ...],
+) -> DemSource | None:
+    if topo_file is not None:
+        return DemSource(
+            (DemTile.from_path(topo_file),),
+            require_complete_coverage=True,
+            description=str(topo_file),
+        )
+
+    selected: list[Path] = []
+    for path in iter_local_geotiffs(topo_dir):
+        raster_bounds = _raster_geographic_bounds(path)
+        if any(_bounds_intersect(raster_bounds, item) for item in bounds):
+            selected.append(path)
+    if not selected:
+        return None
+    return DemSource(
+        tuple(DemTile.from_path(path) for path in selected),
+        require_complete_coverage=True,
+        description=str(topo_dir),
+    )
 
 
 def choose_dem_type(bounds: Iterable[GeographicBounds], override: str | None) -> str:

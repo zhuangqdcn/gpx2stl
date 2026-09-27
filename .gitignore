@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+settings.json
 
 # Python environments and caches
 .venv/
@@ -22,6 +23,9 @@ dist/
 # Generated 3D models
 *.3mf
 *.stl
+
+# Downloaded local terrain data
+asset/
 
 # Editor and operating-system files
 .vscode/

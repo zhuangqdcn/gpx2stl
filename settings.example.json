@@ -1,0 +1,19 @@
+{
+  "gpx_file": null,
+  "output": null,
+  "route_width": 1.0,
+  "route_height": 2.0,
+  "topo": true,
+  "boundary_percent": 10.0,
+  "shape": "square",
+  "use_3mf": true,
+  "max_size": 200.0,
+  "terrain_height": 20.0,
+  "base_height": 2.0,
+  "topo_source": "auto",
+  "topo_file": null,
+  "topo_dir": "asset",
+  "dem_type": null,
+  "api_key": null,
+  "force": false
+}
