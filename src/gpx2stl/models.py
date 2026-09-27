@@ -1,0 +1,79 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal
+
+import numpy as np
+from numpy.typing import NDArray
+from pyproj import Transformer
+
+Shape = Literal["square", "circle"]
+
+
+@dataclass(frozen=True)
+class Config:
+    gpx_file: Path
+    output: Path
+    route_width: float = 1.0
+    route_height: float = 2.0
+    topo: bool = True
+    boundary_percent: float = 10.0
+    shape: Shape = "square"
+    use_3mf: bool = True
+    max_size: float = 200.0
+    terrain_height: float = 20.0
+    base_height: float = 2.0
+    dem_type: str | None = None
+    api_key: str | None = None
+    force: bool = False
+
+
+@dataclass(frozen=True)
+class GeoPath:
+    longitude: NDArray[np.float64]
+    latitude: NDArray[np.float64]
+    elevation: NDArray[np.float64]
+
+
+@dataclass(frozen=True)
+class ProjectedRoute:
+    paths: tuple[NDArray[np.float64], ...]
+    elevations: tuple[NDArray[np.float64], ...]
+    forward: Transformer
+    inverse: Transformer
+
+    @property
+    def points(self) -> NDArray[np.float64]:
+        return np.concatenate(self.paths)
+
+
+@dataclass(frozen=True)
+class Footprint:
+    shape: Shape
+    center: NDArray[np.float64]
+    radius: float
+
+    @property
+    def min_xy(self) -> NDArray[np.float64]:
+        return self.center - self.radius
+
+    @property
+    def max_xy(self) -> NDArray[np.float64]:
+        return self.center + self.radius
+
+    @property
+    def diameter(self) -> float:
+        return self.radius * 2.0
+
+
+@dataclass(frozen=True)
+class ModelTransform:
+    footprint: Footprint
+    scale: float
+
+    def to_model(self, points: NDArray[np.float64]) -> NDArray[np.float64]:
+        return (points - self.footprint.center) * self.scale
+
+    def to_projected(self, points: NDArray[np.float64]) -> NDArray[np.float64]:
+        return points / self.scale + self.footprint.center
