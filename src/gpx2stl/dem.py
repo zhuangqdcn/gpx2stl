@@ -19,6 +19,7 @@ from gpx2stl.errors import Gpx2StlError
 from gpx2stl.models import Footprint, ProjectedRoute
 
 GLOBAL_DEM_URL = "https://portal.opentopography.org/API/globaldem"
+COPERNICUS_GLO30_URL = "https://copernicus-dem-30m.s3.amazonaws.com"
 SUPPORTED_DEM_TYPES = {
     "SRTMGL3",
     "SRTMGL1",
@@ -169,15 +170,23 @@ class DemSource:
     require_complete_coverage: bool = False
     description: str = "DEM"
 
+    def covers_lonlat(
+        self, longitude: NDArray[np.float64], latitude: NDArray[np.float64]
+    ) -> NDArray[np.bool_]:
+        covered = np.zeros(longitude.shape, dtype=np.bool_)
+        adjusted = ((longitude + 180.0) % 360.0) - 180.0
+        for tile in self.tiles:
+            covered |= tile.covers(adjusted, latitude)
+        return covered
+
     def sample_lonlat(
         self, longitude: NDArray[np.float64], latitude: NDArray[np.float64]
     ) -> NDArray[np.float64]:
         result = np.full(longitude.shape, np.nan, dtype=np.float64)
-        covered = np.zeros(longitude.shape, dtype=np.bool_)
+        covered = self.covers_lonlat(longitude, latitude)
         for tile in self.tiles:
             adjusted = ((longitude + 180.0) % 360.0) - 180.0
             tile_coverage = tile.covers(adjusted, latitude)
-            covered |= tile_coverage
             inside = np.isnan(result) & tile_coverage
             if np.any(inside):
                 result[inside] = tile.sample(adjusted[inside], latitude[inside])
@@ -319,6 +328,89 @@ def load_local_dem(
         require_complete_coverage=True,
         description=str(topo_dir),
     )
+
+
+def _copernicus_tile_name(latitude: int, longitude: int) -> str:
+    northing = f"{'N' if latitude >= 0 else 'S'}{abs(latitude):02d}_00"
+    easting = f"{'E' if longitude >= 0 else 'W'}{abs(longitude):03d}_00"
+    return f"Copernicus_DSM_COG_10_{northing}_{easting}_DEM"
+
+
+def required_copernicus_tiles(
+    bounds: tuple[GeographicBounds, ...],
+) -> tuple[str, ...]:
+    names: set[str] = set()
+    for item in bounds:
+        south = max(-90, math.floor(item.south))
+        north = min(90, math.ceil(item.north))
+        west = max(-180, math.floor(item.west))
+        east = min(180, math.ceil(item.east))
+        for latitude in range(south, north):
+            for longitude in range(west, east):
+                names.add(_copernicus_tile_name(latitude, longitude))
+    return tuple(sorted(names))
+
+
+def cache_copernicus_tiles(
+    bounds: tuple[GeographicBounds, ...],
+    cache_dir: Path,
+    session: requests.Session | None = None,
+    timeout: tuple[float, float] = (10.0, 180.0),
+) -> bool:
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    http = session or requests.Session()
+    for tile_name in required_copernicus_tiles(bounds):
+        destination = cache_dir / f"{tile_name}.tif"
+        if destination.is_file() and destination.stat().st_size > 0:
+            continue
+        partial = destination.with_suffix(".tif.part")
+        offset = partial.stat().st_size if partial.is_file() else 0
+        headers = {"Range": f"bytes={offset}-"} if offset else {}
+        url = f"{COPERNICUS_GLO30_URL}/{tile_name}/{tile_name}.tif"
+        try:
+            response = http.get(
+                url,
+                headers=headers,
+                stream=True,
+                timeout=timeout,
+            )
+        except requests.RequestException as exc:
+            raise Gpx2StlError(f"Copernicus GLO-30 download failed: {exc}") from exc
+        if response.status_code == 404:
+            return False
+        if offset and response.status_code != 206:
+            offset = 0
+        if not response.ok:
+            raise Gpx2StlError(
+                f"Copernicus GLO-30 returned HTTP {response.status_code} for "
+                f"{tile_name}."
+            )
+        mode = "ab" if offset and response.status_code == 206 else "wb"
+        try:
+            with partial.open(mode) as stream:
+                for chunk in response.iter_content(1024 * 1024):
+                    if chunk:
+                        stream.write(chunk)
+            partial.replace(destination)
+        except OSError as exc:
+            raise Gpx2StlError(
+                f"Unable to cache Copernicus tile '{destination}': {exc}"
+            ) from exc
+    return True
+
+
+def dem_covers_bounds(
+    source: DemSource,
+    bounds: tuple[GeographicBounds, ...],
+    samples_per_axis: int = 9,
+) -> bool:
+    for item in bounds:
+        longitude = np.linspace(item.west, item.east, samples_per_axis)
+        latitude = np.linspace(item.south, item.north, samples_per_axis)
+        xx, yy = np.meshgrid(longitude, latitude)
+        if not np.all(source.covers_lonlat(xx.ravel(), yy.ravel())):
+            return False
+    return True
 
 
 def choose_dem_type(bounds: Iterable[GeographicBounds], override: str | None) -> str:

@@ -132,7 +132,7 @@ gpx2stl route.gpx --dem-type COP30 --force
 
 ## Topography source behavior
 
-- `auto` (default): use an explicit `--topo-file`, otherwise use intersecting tiles under `--topo-dir`; if no local raster intersects, use OpenTopography. Partial local coverage is an error.
+- `auto` (default): use an explicit `--topo-file`, otherwise use intersecting tiles under `--topo-dir`. Missing matching GLO-30 tiles are downloaded anonymously from the public Copernicus AWS bucket into `--topo-dir` and reused as a persistent cache. If GLO-30 is unavailable, OpenTopography is used when an API key is configured.
 - `local`: require complete local coverage and never access the network.
 - `online`: ignore local data and use OpenTopography.
 
@@ -164,6 +164,10 @@ uv sync --extra dev
 ```
 
 Tests use synthetic GPX and GeoTIFF data and do not require network access or a real API key.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE). Terrain datasets remain subject to their respective licenses and attribution requirements.
 
 ---
 
@@ -299,7 +303,7 @@ gpx2stl route.gpx --dem-type COP30 --force
 
 ## 地形数据源规则
 
-- `auto`（默认）：优先使用 `--topo-file`，否则使用 `--topo-dir` 中相交的瓦片；没有本地数据相交时使用 OpenTopography。本地覆盖不完整会报错。
+- `auto`（默认）：优先使用 `--topo-file`，否则使用 `--topo-dir` 中相交的瓦片。缺少且匹配的 GLO-30 瓦片会从公开的 Copernicus AWS 存储桶匿名下载到 `--topo-dir`，并作为持久缓存重复使用。如果 GLO-30 不可用且已配置 API Key，则回退到 OpenTopography。
 - `local`：要求本地数据完整覆盖，绝不访问网络。
 - `online`：忽略本地数据并使用 OpenTopography。
 
@@ -331,3 +335,7 @@ uv sync --extra dev
 ```
 
 自动化测试使用合成 GPX 和 GeoTIFF 数据，不需要联网或真实 API Key。
+
+## 许可证
+
+本项目采用 [MIT License](LICENSE)。地形数据集仍受其各自的许可证与署名要求约束。

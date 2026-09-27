@@ -9,14 +9,17 @@ from rasterio.io import MemoryFile
 from rasterio.transform import from_bounds, from_origin
 
 from gpx2stl.dem import (
+    COPERNICUS_GLO30_URL,
     GLOBAL_DEM_URL,
     DemSource,
     DemTile,
     GeographicBounds,
     OpenTopographyClient,
     _copernicus_geographic_bounds,
+    cache_copernicus_tiles,
     choose_dem_type,
     load_local_dem,
+    required_copernicus_tiles,
 )
 from gpx2stl.errors import Gpx2StlError
 
@@ -70,6 +73,28 @@ def test_copernicus_filename_provides_tile_bounds() -> None:
     assert _copernicus_geographic_bounds(path) == GeographicBounds(
         -7, -6, -123, -122
     )
+
+
+def test_required_copernicus_tiles_cross_degree_boundary() -> None:
+    bounds = (GeographicBounds(50.1, 50.2, -123.1, -122.9),)
+    assert required_copernicus_tiles(bounds) == (
+        "Copernicus_DSM_COG_10_N50_00_W123_00_DEM",
+        "Copernicus_DSM_COG_10_N50_00_W124_00_DEM",
+    )
+
+
+@responses.activate
+def test_missing_copernicus_tiles_are_cached(tmp_path: Path) -> None:
+    bounds = (GeographicBounds(50.1, 50.2, -122.9, -122.8),)
+    tile = "Copernicus_DSM_COG_10_N50_00_W123_00_DEM"
+    url = f"{COPERNICUS_GLO30_URL}/{tile}/{tile}.tif"
+    responses.add(responses.GET, url, body=b"cached-dem", status=200)
+
+    assert cache_copernicus_tiles(bounds, tmp_path)
+    assert (tmp_path / f"{tile}.tif").read_bytes() == b"cached-dem"
+
+    assert cache_copernicus_tiles(bounds, tmp_path)
+    assert len(responses.calls) == 1
 
 
 def test_dem_tile_bilinear_sampling() -> None:

@@ -4,7 +4,9 @@ from gpx2stl.dem import (
     DemSource,
     GeographicBounds,
     OpenTopographyClient,
+    cache_copernicus_tiles,
     choose_dem_type,
+    dem_covers_bounds,
     load_local_dem,
     request_bounds,
 )
@@ -25,8 +27,18 @@ def resolve_dem(
 ) -> DemSource:
     if config.topo_source != "online":
         local = load_local_dem(config.topo_file, config.topo_dir, bounds)
-        if local is not None:
+        if local is not None and (
+            config.topo_source == "local" or dem_covers_bounds(local, bounds)
+        ):
             return local
+        if (
+            config.topo_source == "auto"
+            and config.topo_file is None
+            and cache_copernicus_tiles(bounds, config.topo_dir)
+        ):
+            cached = load_local_dem(None, config.topo_dir, bounds)
+            if cached is not None:
+                return cached
         if config.topo_source == "local":
             raise Gpx2StlError(
                 f"No local GeoTIFF intersects the requested footprint in '{config.topo_dir}'."

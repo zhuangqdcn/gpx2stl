@@ -63,6 +63,7 @@ def test_auto_prefers_local_without_api_key(
 ) -> None:
     expected = DemSource(())
     monkeypatch.setattr(gpx2stl.pipeline, "load_local_dem", lambda *args: expected)
+    monkeypatch.setattr(gpx2stl.pipeline, "dem_covers_bounds", lambda *args: True)
     assert resolve_dem(
         _config(tmp_path, "auto"),
         (GeographicBounds(0, 1, 0, 1),),
@@ -73,6 +74,9 @@ def test_local_fails_without_intersecting_raster(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(gpx2stl.pipeline, "load_local_dem", lambda *args: None)
+    monkeypatch.setattr(
+        gpx2stl.pipeline, "cache_copernicus_tiles", lambda *args: False
+    )
     with pytest.raises(Gpx2StlError, match="No local GeoTIFF"):
         resolve_dem(
             _config(tmp_path, "local"),
@@ -84,6 +88,9 @@ def test_auto_without_local_or_key_reports_online_requirement(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(gpx2stl.pipeline, "load_local_dem", lambda *args: None)
+    monkeypatch.setattr(
+        gpx2stl.pipeline, "cache_copernicus_tiles", lambda *args: False
+    )
     with pytest.raises(Gpx2StlError, match="requires --api-key"):
         resolve_dem(
             _config(tmp_path, "auto"),
