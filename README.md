@@ -18,15 +18,17 @@ Convert GPX tracks and routes into printable terrain models:
 
 With `uv`:
 
-```powershell
+```bash
 uv sync
+source .venv/bin/activate
 ```
 
 Or with `pip`:
 
-```powershell
+```bash
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e .
+source .venv/bin/activate
+python -m pip install -e .
 ```
 
 ## API key
@@ -45,8 +47,8 @@ At startup, the command searches from the current directory upward for `settings
 
 Copy `settings.example.json` to `settings.json` and edit the values you want:
 
-```powershell
-Copy-Item settings.example.json settings.json
+```bash
+cp settings.example.json settings.json
 ```
 
 JSON keys use the Python/long-option names with underscores, such as `route_width`, `boundary_percent`, `topo_source`, and `topo_dir`. The positional input can also be defaulted with `gpx_file`. Use `use_3mf` for the `--3mf` / `--no-3mf` setting. Unknown keys, invalid JSON, or incorrect value types produce an explicit error. `settings.json` is ignored by Git; `settings.example.json` is tracked as a complete template.
@@ -55,8 +57,8 @@ JSON keys use the Python/long-option names with underscores, such as `route_widt
 
 Place local `.tif` or `.tiff` elevation files under `./asset`. The directory is scanned recursively and is ignored by Git:
 
-```powershell
-New-Item -ItemType Directory -Force asset
+```bash
+mkdir -p asset
 ```
 
 Local files may use any valid georeferenced CRS. The complete padded printable footprint must be covered by the selected file or tiles. If local tiles intersect the footprint but leave a gap, conversion fails rather than silently mixing local and online elevations.
@@ -70,33 +72,33 @@ Download every 1° tile touched by the padded footprint, not only the raw GPX ce
 
 ## Usage
 
-```powershell
-.\.venv\Scripts\gpx2stl.exe route.gpx
+```bash
+python -m gpx2stl route.gpx
 ```
 
 This writes `route.3mf` beside `route.gpx`. Examples:
 
-```powershell
+```bash
 # Circular, two-color 3MF with terrain
-gpx2stl route.gpx --shape circle --max-size 180
+python -m gpx2stl route.gpx --shape circle --max-size 180
 
 # Force one local GeoTIFF (no API key or network)
-gpx2stl route.gpx --topo-source local --topo-file .\terrain.tif
+python -m gpx2stl route.gpx --topo-source local --topo-file ./terrain.tif
 
 # Recursively use tiles under ./asset
-gpx2stl route.gpx --topo-source local
+python -m gpx2stl route.gpx --topo-source local
 
 # Force OpenTopography instead of local data
-gpx2stl route.gpx --topo-source online --api-key YOUR_KEY
+python -m gpx2stl route.gpx --topo-source online --api-key YOUR_KEY
 
 # Single-mesh STL with terrain
-gpx2stl route.gpx --no-3mf -o route.stl
+python -m gpx2stl route.gpx --no-3mf -o route.stl
 
 # No network/topography; use GPX elevation for route height
-gpx2stl route.gpx --no-topo --no-3mf
+python -m gpx2stl route.gpx --no-topo --no-3mf
 
 # Override automatic DEM selection
-gpx2stl route.gpx --dem-type COP30 --force
+python -m gpx2stl route.gpx --dem-type COP30 --force
 ```
 
 ### Options
@@ -158,9 +160,10 @@ Confirm or remap those two parts to the desired AMS/filament slots before slicin
 
 ## Development
 
-```powershell
+```bash
 uv sync --extra dev
-.\.venv\Scripts\python.exe -m pytest
+source .venv/bin/activate
+python -m pytest
 ```
 
 Tests use synthetic GPX and GeoTIFF data and do not require network access or a real API key.
@@ -189,15 +192,17 @@ This project is licensed under the [MIT License](LICENSE). Terrain datasets rema
 
 使用 `uv`：
 
-```powershell
+```bash
 uv sync
+source .venv/bin/activate
 ```
 
 或使用 `pip`：
 
-```powershell
+```bash
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e .
+source .venv/bin/activate
+python -m pip install -e .
 ```
 
 ## 配置 API Key
@@ -216,8 +221,8 @@ OPENTOPOGRAPHY_API_KEY=你的API密钥
 
 复制完整模板后按需修改：
 
-```powershell
-Copy-Item settings.example.json settings.json
+```bash
+cp settings.example.json settings.json
 ```
 
 JSON 键使用 Python/长参数对应的下划线名称，例如 `route_width`、`boundary_percent`、`topo_source` 和 `topo_dir`。也可用 `gpx_file` 设置默认输入文件；`--3mf` / `--no-3mf` 对应 `use_3mf`。未知键、无效 JSON 或错误的数据类型都会产生明确错误。`settings.json` 已被 Git 忽略，而完整模板 `settings.example.json` 会纳入版本控制。
@@ -226,8 +231,8 @@ JSON 键使用 Python/长参数对应的下划线名称，例如 `route_width`�
 
 将本地 `.tif` 或 `.tiff` 高程文件放入 `./asset`。程序会递归扫描该目录，且该目录已被 Git 忽略：
 
-```powershell
-New-Item -ItemType Directory -Force asset
+```bash
+mkdir -p asset
 ```
 
 本地文件可使用任意有效的地理坐标参考系统（CRS）。选中的单个文件或多个瓦片必须完整覆盖加边界后的可打印区域。如果本地瓦片与模型相交但覆盖不完整，程序会报错，不会静默混合本地与在线数据。
@@ -241,33 +246,33 @@ New-Item -ItemType Directory -Force asset
 
 ## 使用方法
 
-```powershell
-.\.venv\Scripts\gpx2stl.exe route.gpx
+```bash
+python -m gpx2stl route.gpx
 ```
 
 默认在 GPX 文件旁生成 `route.3mf`。示例：
 
-```powershell
+```bash
 # 带地形的圆形双色 3MF
-gpx2stl route.gpx --shape circle --max-size 180
+python -m gpx2stl route.gpx --shape circle --max-size 180
 
 # 强制使用一个本地 GeoTIFF（无需 API Key 或网络）
-gpx2stl route.gpx --topo-source local --topo-file .\terrain.tif
+python -m gpx2stl route.gpx --topo-source local --topo-file ./terrain.tif
 
 # 递归使用 ./asset 中的瓦片
-gpx2stl route.gpx --topo-source local
+python -m gpx2stl route.gpx --topo-source local
 
 # 强制使用 OpenTopography
-gpx2stl route.gpx --topo-source online --api-key YOUR_KEY
+python -m gpx2stl route.gpx --topo-source online --api-key YOUR_KEY
 
 # 带地形的单网格 STL
-gpx2stl route.gpx --no-3mf -o route.stl
+python -m gpx2stl route.gpx --no-3mf -o route.stl
 
 # 不联网、不生成地形；使用 GPX 高程生成路线高度
-gpx2stl route.gpx --no-topo --no-3mf
+python -m gpx2stl route.gpx --no-topo --no-3mf
 
 # 手动指定 DEM 数据集
-gpx2stl route.gpx --dem-type COP30 --force
+python -m gpx2stl route.gpx --dem-type COP30 --force
 ```
 
 ### 参数
@@ -329,9 +334,10 @@ OpenTopography 要求 API Key，并有请求范围和频率限制。API、认证
 
 ## 开发与测试
 
-```powershell
+```bash
 uv sync --extra dev
-.\.venv\Scripts\python.exe -m pytest
+source .venv/bin/activate
+python -m pytest
 ```
 
 自动化测试使用合成 GPX 和 GeoTIFF 数据，不需要联网或真实 API Key。
