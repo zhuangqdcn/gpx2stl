@@ -58,6 +58,31 @@ def test_conversion_uses_local_file_without_network(
     assert output.is_file()
 
 
+def test_conversion_reports_meaningful_progress(
+    simple_gpx: Path, tmp_path: Path
+) -> None:
+    output = tmp_path / "progress.3mf"
+    messages: list[str] = []
+    convert(
+        Config(
+            gpx_file=simple_gpx,
+            output=output,
+            topo=False,
+            max_size=20.0,
+        ),
+        progress=messages.append,
+    )
+    assert output.is_file()
+    assert any(message.startswith("Reading GPX paths") for message in messages)
+    assert any(message.startswith("Loaded 1 path") for message in messages)
+    assert any(message.startswith("Created square footprint") for message in messages)
+    assert "Topography disabled; generating a flat base" in messages
+    assert "Generating watertight terrain/base and route meshes" in messages
+    assert "Writing two-material 3MF package" in messages
+    assert "Validated 3MF mesh and material resources" in messages
+    assert messages[-1] == f"Finished writing {output}"
+
+
 def test_auto_prefers_local_without_api_key(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

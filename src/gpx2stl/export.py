@@ -11,6 +11,7 @@ import trimesh
 from gpx2stl.errors import Gpx2StlError
 from gpx2stl.mesh import Geometry
 from gpx2stl.models import Config
+from gpx2stl.progress import ProgressCallback, console_progress
 
 
 def _color(red: int, green: int, blue: int) -> lib3mf.Color:
@@ -111,7 +112,11 @@ def _write_stl(path: Path, geometry: Geometry) -> None:
         raise Gpx2StlError("STL validation failed after writing the file.")
 
 
-def export_geometry(geometry: Geometry, config: Config) -> None:
+def export_geometry(
+    geometry: Geometry,
+    config: Config,
+    progress: ProgressCallback = console_progress,
+) -> None:
     temporary_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -122,9 +127,14 @@ def export_geometry(geometry: Geometry, config: Config) -> None:
         ) as temporary:
             temporary_path = Path(temporary.name)
         if config.use_3mf:
+            progress("Writing two-material 3MF package")
             _write_3mf(temporary_path, geometry, config.topo)
+            progress("Validated 3MF mesh and material resources")
         else:
+            progress("Unioning route and terrain into one STL mesh")
             _write_stl(temporary_path, geometry)
+            progress("Validated watertight STL output")
+        progress("Atomically replacing the destination file")
         os.replace(temporary_path, config.output)
         temporary_path = None
     finally:

@@ -4,7 +4,6 @@ import argparse
 import json
 import math
 import os
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -293,4 +292,3 @@ def main(argv: list[str] | None = None) -> None:
         parser.exit(1, f"gpx2stl: error: {exc}\n")
     except KeyboardInterrupt:
         parser.exit(130, "gpx2stl: interrupted\n")
-    print(f"Wrote {config.output}", file=sys.stdout)

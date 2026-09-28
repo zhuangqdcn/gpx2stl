@@ -78,6 +78,8 @@ python -m gpx2stl route.gpx
 
 This writes `route.3mf` beside `route.gpx`. Examples:
 
+The command prints timestamped progress messages while it parses the GPX, chooses or downloads terrain, creates meshes, exports the selected format, and validates the output.
+
 ```bash
 # Circular, two-color 3MF with terrain
 python -m gpx2stl route.gpx --shape circle --max-size 180
@@ -251,6 +253,8 @@ python -m gpx2stl route.gpx
 ```
 
 默认在 GPX 文件旁生成 `route.3mf`。示例：
+
+程序会输出带时间戳的进度日志，包括解析 GPX、选择或下载地形、生成网格、导出所选格式以及验证输出。
 
 ```bash
 # 带地形的圆形双色 3MF
