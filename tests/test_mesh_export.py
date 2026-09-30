@@ -56,7 +56,33 @@ def test_topo_circle_geometry_is_watertight(simple_gpx: Path, tmp_path: Path) ->
     assert geometry.terrain.is_watertight
     assert geometry.route.is_watertight
     assert np.isclose(np.ptp(geometry.terrain.vertices[:, 0]), 20.0)
-    assert geometry.terrain.bounds[1, 2] >= config.base_height + config.terrain_height
+    top_vertices = geometry.terrain.vertices[
+        geometry.terrain.vertices[:, 2] >= config.base_height
+    ]
+    projected = transform.to_projected(top_vertices[:, :2])
+    raw_relief = np.ptp(SlopedDem().sample_projected(projected, route))
+    model_relief = np.ptp(top_vertices[:, 2])
+    assert np.isclose(model_relief, raw_relief * transform.scale)
+
+
+def test_explicit_terrain_height_overrides_automatic_scale(
+    simple_gpx: Path, tmp_path: Path
+) -> None:
+    route = project_paths(read_gpx(simple_gpx))
+    footprint = create_footprint(route.points, "square", 10.0, 1.0)
+    transform = create_model_transform(footprint, 20.0)
+    config = Config(
+        gpx_file=simple_gpx,
+        output=tmp_path / "unused.3mf",
+        topo=True,
+        max_size=20.0,
+        terrain_height=30.0,
+    )
+    geometry = build_geometry(route, footprint, transform, config, SlopedDem())
+    top_vertices = geometry.terrain.vertices[
+        geometry.terrain.vertices[:, 2] >= config.base_height
+    ]
+    assert np.isclose(np.ptp(top_vertices[:, 2]), 30.0)
 
 
 def test_3mf_round_trip_has_two_meshes_and_materials(

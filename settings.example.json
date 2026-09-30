@@ -8,7 +8,7 @@
   "shape": "square",
   "use_3mf": true,
   "max_size": 200.0,
-  "terrain_height": 20.0,
+  "terrain_height": null,
   "base_height": 2.0,
   "topo_source": "auto",
   "topo_file": null,

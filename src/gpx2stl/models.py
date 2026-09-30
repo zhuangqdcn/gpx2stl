@@ -23,7 +23,7 @@ class Config:
     shape: Shape = "square"
     use_3mf: bool = True
     max_size: float = 200.0
-    terrain_height: float = 20.0
+    terrain_height: float | None = None
     base_height: float = 2.0
     topo_source: TopoSource = "auto"
     topo_file: Path | None = None

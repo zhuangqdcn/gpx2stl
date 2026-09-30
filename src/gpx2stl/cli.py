@@ -135,8 +135,8 @@ def create_parser(settings: dict[str, Any] | None = None) -> argparse.ArgumentPa
     parser.add_argument(
         "--terrain-height",
         type=_positive,
-        default=20.0,
-        help="terrain relief range in mm (default: 20)",
+        default=None,
+        help="terrain relief range in mm (default: same scale as --max-size)",
     )
     parser.add_argument(
         "--base-height",
@@ -248,7 +248,6 @@ def _validate_setting_types(
         "route_height",
         "boundary_percent",
         "max_size",
-        "terrain_height",
         "base_height",
     )
     for name in numeric:
@@ -264,7 +263,14 @@ def _validate_setting_types(
         parser.error("route dimensions must be greater than zero")
     if args.boundary_percent < 0:
         parser.error("--boundary-percent must be greater than or equal to zero")
-    if args.max_size <= 0 or args.terrain_height <= 0 or args.base_height <= 0:
+    if args.terrain_height is not None:
+        if isinstance(args.terrain_height, bool) or not isinstance(
+            args.terrain_height, (int, float)
+        ):
+            parser.error("settings.json value 'terrain_height' must be a number or null")
+        if not math.isfinite(args.terrain_height) or args.terrain_height <= 0:
+            parser.error("--terrain-height must be a finite number greater than zero")
+    if args.max_size <= 0 or args.base_height <= 0:
         parser.error("model dimensions must be greater than zero")
     if args.shape not in {"square", "circle"}:
         parser.error("settings.json value 'shape' must be 'square' or 'circle'")

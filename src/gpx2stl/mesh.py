@@ -25,6 +25,18 @@ class Geometry:
     route: trimesh.Trimesh
 
 
+def _terrain_relief_height(
+    raw: NDArray[np.float64],
+    transform: ModelTransform,
+    configured_height: float | None,
+) -> NDArray[np.float64]:
+    span = float(np.ptp(raw))
+    if span <= 1e-9:
+        return np.zeros_like(raw)
+    height = configured_height if configured_height is not None else span * transform.scale
+    return (raw - float(np.min(raw))) / span * height
+
+
 def _model_resolution(max_size: float) -> int:
     return max(24, min(256, math.ceil(max_size) + 1))
 
@@ -60,9 +72,8 @@ def _structured_square(
         top = np.full(len(points), config.base_height, dtype=np.float64)
     else:
         raw = fill_missing(raw_height(points).reshape(resolution, resolution)).ravel()
-        span = float(np.ptp(raw))
-        relief = np.zeros_like(raw) if span <= 1e-9 else (raw - float(np.min(raw))) / span
-        top = config.base_height + relief * config.terrain_height
+        relief = _terrain_relief_height(raw, transform, config.terrain_height)
+        top = config.base_height + relief
 
     count = len(points)
     vertices = np.vstack(
@@ -122,9 +133,8 @@ def _polar_circle(
         if np.any(missing):
             nearest = NearestNDInterpolator(xy[~missing], raw[~missing])
             raw[missing] = nearest(xy[missing])
-        span = float(np.ptp(raw))
-        relief = np.zeros_like(raw) if span <= 1e-9 else (raw - float(np.min(raw))) / span
-        top = config.base_height + relief * config.terrain_height
+        relief = _terrain_relief_height(raw, transform, config.terrain_height)
+        top = config.base_height + relief
 
     count = len(xy)
     vertices = np.vstack(

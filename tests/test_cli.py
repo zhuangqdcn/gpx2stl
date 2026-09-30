@@ -27,7 +27,7 @@ def test_cli_defaults(simple_gpx: Path, monkeypatch: pytest.MonkeyPatch) -> None
     assert config.boundary_percent == 10.0
     assert config.shape == "square"
     assert config.max_size == 200.0
-    assert config.terrain_height == 20.0
+    assert config.terrain_height is None
     assert config.base_height == 2.0
     assert config.topo_source == "auto"
     assert config.topo_file is None

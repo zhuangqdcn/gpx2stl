@@ -116,7 +116,7 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 | `--shape` | `square` | `square` or `circle`. Squares remain north-up. |
 | `--3mf`, `--no-3mf` | 3MF | Select two-material 3MF or single-mesh STL. |
 | `--max-size` | `200` mm | Maximum final X/Y dimension. |
-| `--terrain-height` | `20` mm | Normalized min-to-max terrain relief. |
+| `--terrain-height` | automatic | Terrain relief in mm. By default, elevation uses the same real-world-to-model ratio as `--max-size`; an explicit value normalizes relief to that height. |
 | `--base-height` | `2` mm | Solid base thickness. |
 | `--topo-source` | `auto` | `auto` uses complete local coverage first, `online` uses OpenTopography, and `local` disables network fallback. |
 | `--topo-file` | none | One local GeoTIFF in any valid CRS; takes precedence over `--topo-dir`. |
@@ -129,7 +129,8 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 
 - Geographic coordinates are projected into a route-centered local metric projection, then uniformly scaled so the padded footprint fits `--max-size`.
 - The route width is included as extra footprint clearance, including when boundary padding is zero.
-- Terrain elevations are normalized into the configured `--terrain-height` range.
+- By default, terrain elevations use the same scale as X/Y: the horizontal ratio derived from `--max-size` is applied to the DEM elevation range. For example, a horizontal scale of 1:20,000 also makes 1,000 m of elevation equal 50 mm.
+- Setting `--terrain-height` explicitly overrides true-scale relief and normalizes the DEM minimum-to-maximum range to that many millimeters.
 - Without topo, GPX altitude controls the route top at physical 1:20,000 vertical scale: 1,000 m becomes 50 mm. Internal missing elevations are interpolated; missing endpoint/all elevations are errors.
 - Square output is the smallest north-up square around the route before padding. Circle output uses the true minimum enclosing circle before padding.
 - Routes crossing the ±180° antimeridian are supported by split DEM requests.
@@ -292,7 +293,7 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 | `--shape` | `square` | `square`（方形）或 `circle`（圆形）；方形保持正北朝上。 |
 | `--3mf`, `--no-3mf` | 3MF | 选择双色 3MF 或单网格 STL。 |
 | `--max-size` | `200` mm | 最终模型 X/Y 最大尺寸。 |
-| `--terrain-height` | `20` mm | 地形最低点到最高点的归一化高度差。 |
+| `--terrain-height` | 自动 | 地形高度差（mm）。默认使用与 `--max-size` 相同的真实世界到模型比例；显式设置后会将地形高度差归一化到该值。 |
 | `--base-height` | `2` mm | 实体底座厚度。 |
 | `--topo-source` | `auto` | `auto` 优先使用完整本地数据，`online` 使用 OpenTopography，`local` 禁止联网回退。 |
 | `--topo-file` | 无 | 一个任意有效 CRS 的本地 GeoTIFF；优先于 `--topo-dir`。 |
@@ -305,7 +306,8 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 
 - 经纬度先转换到以路线中心为原点的局部米制投影，再进行等比例缩放，使带边界的模型不超过 `--max-size`。
 - 计算底座范围时会额外预留路线宽度；即使边界百分比为零，路线也不会超出底座。
-- DEM 地形高程归一化到 `--terrain-height` 指定的范围。
+- 默认情况下，地形高程与 X/Y 使用相同比例：由 `--max-size` 得出的水平缩放比例也应用于 DEM 高程范围。例如，水平比例为 1:20,000 时，1,000 m 高程同样对应 50 mm。
+- 显式设置 `--terrain-height` 会覆盖真实比例，将 DEM 最低点到最高点的高度差归一化到指定毫米数。
 - 禁用地形时，路线顶部采用 GPX 高程和真实的 1:20,000 垂直比例：1,000 m 对应 50 mm。内部缺失高程会插值；端点或全部高程缺失会报错。
 - 方形为加边界前包围路线的最小正北方形；圆形为加边界前的真实最小包围圆。
 - 支持跨越 ±180° 日期变更线的路线；此时会拆分 DEM 请求。
