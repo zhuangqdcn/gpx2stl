@@ -80,19 +80,31 @@ def convert(
         paths = tuple(interpolate_elevations(path) for path in paths)
     progress("Projecting geographic coordinates into a local metric system")
     route = project_paths(paths)
-    minimum_footprint = config.route_width / config.max_size
+    terrain_size = (
+        config.max_size * config.inner_size_percent / 100.0
+        if config.text is not None
+        else config.max_size
+    )
+    footprint_shape = "circle" if config.text is not None else config.shape
+    minimum_footprint = config.route_width / terrain_size
     footprint = create_footprint(
         route.points,
-        config.shape,
+        footprint_shape,
         config.boundary_percent,
         minimum_footprint,
     )
-    footprint = add_route_clearance(footprint, config.route_width, config.max_size)
-    transform = create_model_transform(footprint, config.max_size)
-    progress(
-        f"Created {config.shape} footprint: {footprint.diameter / 1000:.2f} km "
-        f"source span -> {config.max_size:.1f} mm model"
-    )
+    footprint = add_route_clearance(footprint, config.route_width, terrain_size)
+    transform = create_model_transform(footprint, terrain_size)
+    if config.text is None:
+        progress(
+            f"Created {config.shape} footprint: {footprint.diameter / 1000:.2f} km "
+            f"source span -> {config.max_size:.1f} mm model"
+        )
+    else:
+        progress(
+            f"Created {config.shape} frame with {terrain_size:.1f} mm circular "
+            f"terrain inset for {footprint.diameter / 1000:.2f} km source span"
+        )
 
     dem = None
     if config.topo:
@@ -118,5 +130,10 @@ def convert(
         f"Generated route mesh ({len(geometry.route.vertices):,} vertices, "
         f"{len(geometry.route.faces):,} faces)"
     )
+    if geometry.text is not None:
+        progress(
+            f"Generated text mesh ({len(geometry.text.vertices):,} vertices, "
+            f"{len(geometry.text.faces):,} faces)"
+        )
     export_geometry(geometry, config, progress)
     progress(f"Finished writing {config.output}")

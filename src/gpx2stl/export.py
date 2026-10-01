@@ -54,6 +54,11 @@ def _write_3mf(path: Path, geometry: Geometry, topo: bool) -> None:
         terrain_material = materials.AddMaterial(
             f"Filament 2 - {terrain_label}", _color(180, 180, 180)
         )
+        text_material = None
+        if geometry.text is not None:
+            text_material = materials.AddMaterial(
+                "Filament 3 - Text", _color(40, 100, 220)
+            )
 
         route = _add_mesh(model, geometry.route, "GPX route")
         route.SetObjectLevelProperty(materials.GetResourceID(), route_material)
@@ -65,6 +70,10 @@ def _write_3mf(path: Path, geometry: Geometry, topo: bool) -> None:
         identity = wrapper.GetIdentityTransform()
         assembly.AddComponent(route, identity)
         assembly.AddComponent(terrain, identity)
+        if geometry.text is not None and text_material is not None:
+            text = _add_mesh(model, geometry.text, "Text")
+            text.SetObjectLevelProperty(materials.GetResourceID(), text_material)
+            assembly.AddComponent(text, identity)
         model.AddBuildItem(assembly, identity)
         model.QueryWriter("3mf").WriteToFile(str(path))
 
@@ -73,9 +82,11 @@ def _write_3mf(path: Path, geometry: Geometry, topo: bool) -> None:
         reader.ReadFromFile(str(path))
         mesh_count = check_model.GetMeshObjects().Count()
         material_groups = check_model.GetBaseMaterialGroups().Count()
-        if mesh_count != 2 or material_groups != 1:
+        expected_meshes = 3 if geometry.text is not None else 2
+        if mesh_count != expected_meshes or material_groups != 1:
             raise Gpx2StlError(
-                "3MF validation failed: expected two meshes and one material group."
+                f"3MF validation failed: expected {expected_meshes} meshes "
+                "and one material group."
             )
     except Gpx2StlError:
         raise
@@ -85,8 +96,11 @@ def _write_3mf(path: Path, geometry: Geometry, topo: bool) -> None:
 
 def _write_stl(path: Path, geometry: Geometry) -> None:
     try:
+        meshes = [geometry.terrain, geometry.route]
+        if geometry.text is not None:
+            meshes.append(geometry.text)
         combined = trimesh.boolean.union(
-            [geometry.terrain, geometry.route],
+            meshes,
             engine="manifold",
             check_volume=True,
         )
@@ -127,7 +141,8 @@ def export_geometry(
         ) as temporary:
             temporary_path = Path(temporary.name)
         if config.use_3mf:
-            progress("Writing two-material 3MF package")
+            material_count = 3 if geometry.text is not None else 2
+            progress(f"Writing {material_count}-material 3MF package")
             _write_3mf(temporary_path, geometry, config.topo)
             progress("Validated 3MF mesh and material resources")
         else:

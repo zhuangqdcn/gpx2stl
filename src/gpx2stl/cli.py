@@ -22,6 +22,10 @@ SETTING_KEYS = {
     "topo",
     "boundary_percent",
     "shape",
+    "text",
+    "text_height",
+    "inner_size_percent",
+    "font_file",
     "use_3mf",
     "max_size",
     "terrain_height",
@@ -46,6 +50,13 @@ def _nonnegative(value: str) -> float:
     parsed = float(value)
     if not math.isfinite(parsed) or parsed < 0:
         raise argparse.ArgumentTypeError("must be a finite number greater than or equal to zero")
+    return parsed
+
+
+def _percentage_below_100(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed) or parsed <= 0 or parsed >= 100:
+        raise argparse.ArgumentTypeError("must be a finite number greater than zero and below 100")
     return parsed
 
 
@@ -78,7 +89,7 @@ def load_settings(path: Path | None) -> dict[str, Any]:
             f"Unknown setting{'s' if len(unknown) != 1 else ''} in '{path}': "
             f"{', '.join(unknown)}"
         )
-    for name in ("gpx_file", "output", "topo_file", "topo_dir"):
+    for name in ("gpx_file", "output", "topo_file", "topo_dir", "font_file"):
         setting = value.get(name)
         if isinstance(setting, str):
             setting_path = Path(setting)
@@ -115,9 +126,30 @@ def create_parser(settings: dict[str, Any] | None = None) -> argparse.ArgumentPa
     )
     parser.add_argument(
         "--shape",
-        choices=("square", "circle"),
+        choices=("square", "circle", "hex"),
         default="square",
         help="base/terrain footprint (default: square)",
+    )
+    parser.add_argument(
+        "--text",
+        help="raised text following a top arc around a centered terrain circle",
+    )
+    parser.add_argument(
+        "--text-height",
+        type=_positive,
+        default=1.0,
+        help="raised text thickness in mm (default: 1)",
+    )
+    parser.add_argument(
+        "--inner-size-percent",
+        type=_percentage_below_100,
+        default=70.0,
+        help="terrain circle diameter as a percentage of model width (default: 70)",
+    )
+    parser.add_argument(
+        "--font-file",
+        type=Path,
+        help="custom .ttf, .otf, or .ttc font for text glyphs",
     )
     parser.add_argument(
         "--3mf",
@@ -189,6 +221,18 @@ def config_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser) 
     api_key = args.api_key or os.environ.get("OPENTOPOGRAPHY_API_KEY")
     topo_file = Path(args.topo_file).resolve() if args.topo_file else None
     topo_dir = Path(args.topo_dir or "asset").resolve()
+    font_file = Path(args.font_file).resolve() if args.font_file else None
+    text = args.text.strip() if args.text is not None else None
+    if args.text is not None:
+        if not text:
+            parser.error("--text must contain at least one non-whitespace character")
+        if any(not character.isprintable() for character in text):
+            parser.error("--text must contain only printable characters")
+    if font_file is not None:
+        if not font_file.is_file():
+            parser.error(f"font file does not exist or is not a file: {font_file}")
+        if font_file.suffix.lower() not in {".ttf", ".otf", ".ttc"}:
+            parser.error("--font-file must use the .ttf, .otf, or .ttc extension")
     if args.topo:
         if args.topo_source == "online":
             if topo_file is not None or args.topo_dir is not None:
@@ -213,8 +257,18 @@ def config_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser) 
             parser.error(
                 f"local topo requires at least one .tif or .tiff file in: {topo_dir}"
             )
-    if args.route_width >= args.max_size:
-        parser.error("--route-width must be smaller than --max-size")
+    available_route_width = (
+        args.max_size * args.inner_size_percent / 100.0
+        if text is not None
+        else args.max_size
+    )
+    if text is None and args.shape == "hex":
+        available_route_width *= math.sqrt(3.0) / 2.0
+    if args.route_width >= available_route_width:
+        parser.error(
+            "--route-width must be smaller than the available terrain width "
+            f"({available_route_width:g} mm)"
+        )
     return Config(
         gpx_file=gpx_file,
         output=output,
@@ -223,6 +277,10 @@ def config_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser) 
         topo=args.topo,
         boundary_percent=args.boundary_percent,
         shape=args.shape,
+        text=text,
+        text_height=args.text_height,
+        inner_size_percent=args.inner_size_percent,
+        font_file=font_file,
         use_3mf=args.use_3mf,
         max_size=args.max_size,
         terrain_height=args.terrain_height,
@@ -239,7 +297,7 @@ def config_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser) 
 def _validate_setting_types(
     args: argparse.Namespace, parser: argparse.ArgumentParser
 ) -> None:
-    for name in ("gpx_file", "output", "topo_file", "topo_dir"):
+    for name in ("gpx_file", "output", "topo_file", "topo_dir", "font_file"):
         value = getattr(args, name)
         if value is not None and not isinstance(value, (str, Path)):
             parser.error(f"settings.json value '{name}' must be a path string or null")
@@ -247,6 +305,8 @@ def _validate_setting_types(
         "route_width",
         "route_height",
         "boundary_percent",
+        "text_height",
+        "inner_size_percent",
         "max_size",
         "base_height",
     )
@@ -263,6 +323,10 @@ def _validate_setting_types(
         parser.error("route dimensions must be greater than zero")
     if args.boundary_percent < 0:
         parser.error("--boundary-percent must be greater than or equal to zero")
+    if args.text_height <= 0:
+        parser.error("--text-height must be greater than zero")
+    if args.inner_size_percent <= 0 or args.inner_size_percent >= 100:
+        parser.error("--inner-size-percent must be greater than zero and below 100")
     if args.terrain_height is not None:
         if isinstance(args.terrain_height, bool) or not isinstance(
             args.terrain_height, (int, float)
@@ -272,13 +336,13 @@ def _validate_setting_types(
             parser.error("--terrain-height must be a finite number greater than zero")
     if args.max_size <= 0 or args.base_height <= 0:
         parser.error("model dimensions must be greater than zero")
-    if args.shape not in {"square", "circle"}:
-        parser.error("settings.json value 'shape' must be 'square' or 'circle'")
+    if args.shape not in {"square", "circle", "hex"}:
+        parser.error("settings.json value 'shape' must be 'square', 'circle', or 'hex'")
     if args.topo_source not in {"auto", "online", "local"}:
         parser.error(
             "settings.json value 'topo_source' must be 'auto', 'online', or 'local'"
         )
-    for name in ("dem_type", "api_key"):
+    for name in ("text", "dem_type", "api_key"):
         value = getattr(args, name)
         if value is not None and not isinstance(value, str):
             parser.error(f"settings.json value '{name}' must be a string or null")

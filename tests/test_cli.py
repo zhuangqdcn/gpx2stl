@@ -26,6 +26,10 @@ def test_cli_defaults(simple_gpx: Path, monkeypatch: pytest.MonkeyPatch) -> None
     assert config.route_height == 2.0
     assert config.boundary_percent == 10.0
     assert config.shape == "square"
+    assert config.text is None
+    assert config.text_height == 1.0
+    assert config.inner_size_percent == 70.0
+    assert config.font_file is None
     assert config.max_size == 200.0
     assert config.terrain_height is None
     assert config.base_height == 2.0
@@ -139,6 +143,10 @@ def test_every_cli_parameter_overrides_settings_defaults() -> None:
         "topo": True,
         "boundary_percent": 10.0,
         "shape": "square",
+        "text": "SETTINGS",
+        "text_height": 1.0,
+        "inner_size_percent": 70.0,
+        "font_file": "settings.ttf",
         "use_3mf": True,
         "max_size": 200.0,
         "terrain_height": 20.0,
@@ -163,7 +171,15 @@ def test_every_cli_parameter_overrides_settings_defaults() -> None:
             "--boundary-percent",
             "25",
             "--shape",
-            "circle",
+            "hex",
+            "--text",
+            "CLI",
+            "--text-height",
+            "1.5",
+            "--inner-size-percent",
+            "65",
+            "--font-file",
+            "cli.otf",
             "--no-3mf",
             "--max-size",
             "180",
@@ -191,7 +207,11 @@ def test_every_cli_parameter_overrides_settings_defaults() -> None:
     assert args.route_height == 4.0
     assert args.topo is False
     assert args.boundary_percent == 25.0
-    assert args.shape == "circle"
+    assert args.shape == "hex"
+    assert args.text == "CLI"
+    assert args.text_height == 1.5
+    assert args.inner_size_percent == 65.0
+    assert args.font_file == Path("cli.otf")
     assert args.use_3mf is False
     assert args.max_size == 180.0
     assert args.terrain_height == 30.0
@@ -249,12 +269,49 @@ def test_find_settings_searches_parent_directories(tmp_path: Path) -> None:
 def test_settings_paths_are_relative_to_settings_file(tmp_path: Path) -> None:
     settings = tmp_path / "settings.json"
     settings.write_text(
-        '{"gpx_file": "routes/example.gpx", "topo_dir": "asset"}',
+        '{"gpx_file": "routes/example.gpx", "topo_dir": "asset", '
+        '"font_file": "fonts/custom.ttf"}',
         encoding="utf-8",
     )
     values = load_settings(settings)
     assert values["gpx_file"] == str((tmp_path / "routes" / "example.gpx").resolve())
     assert values["topo_dir"] == str((tmp_path / "asset").resolve())
+    assert values["font_file"] == str(
+        (tmp_path / "fonts" / "custom.ttf").resolve()
+    )
+
+
+@pytest.mark.parametrize("value", ["0", "100"])
+def test_inner_size_percent_must_leave_a_frame(
+    simple_gpx: Path, value: str
+) -> None:
+    parser = create_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [str(simple_gpx), "--no-topo", "--inner-size-percent", value]
+        )
+
+
+def test_route_width_must_fit_text_inset(simple_gpx: Path) -> None:
+    parser = create_parser()
+    with pytest.raises(SystemExit):
+        config_from_args(
+            parser.parse_args(
+                [
+                    str(simple_gpx),
+                    "--no-topo",
+                    "--max-size",
+                    "20",
+                    "--text",
+                    "TRAIL",
+                    "--inner-size-percent",
+                    "70",
+                    "--route-width",
+                    "14",
+                ]
+            ),
+            parser,
+        )
 
 
 def test_unknown_setting_is_rejected(tmp_path: Path) -> None:

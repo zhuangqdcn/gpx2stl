@@ -16,6 +16,7 @@ from rasterio.warp import transform_bounds
 from scipy.ndimage import distance_transform_edt
 
 from gpx2stl.errors import Gpx2StlError
+from gpx2stl.footprint import footprint_vertices
 from gpx2stl.models import Footprint, ProjectedRoute
 
 GLOBAL_DEM_URL = "https://portal.opentopography.org/API/globaldem"
@@ -212,17 +213,7 @@ def _footprint_perimeter(footprint: Footprint, samples: int = 180) -> NDArray[np
     if footprint.shape == "circle":
         angle = np.linspace(0.0, 2.0 * math.pi, samples, endpoint=False)
         return footprint.center + footprint.radius * np.column_stack((np.cos(angle), np.sin(angle)))
-    minimum = footprint.min_xy
-    maximum = footprint.max_xy
-    return np.array(
-        [
-            [minimum[0], minimum[1]],
-            [minimum[0], maximum[1]],
-            [maximum[0], minimum[1]],
-            [maximum[0], maximum[1]],
-        ],
-        dtype=np.float64,
-    )
+    return footprint_vertices(footprint)
 
 
 def request_bounds(footprint: Footprint, route: ProjectedRoute) -> tuple[GeographicBounds, ...]:

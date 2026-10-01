@@ -5,8 +5,11 @@ import random
 
 import numpy as np
 from numpy.typing import NDArray
+from scipy.optimize import linprog
 
 from gpx2stl.models import Footprint, ModelTransform, Shape
+
+_HEX_APOTHEM_RATIO = math.sqrt(3.0) / 2.0
 
 
 def _circle_from_two(a: NDArray[np.float64], b: NDArray[np.float64]) -> tuple[np.ndarray, float]:
@@ -17,7 +20,9 @@ def _circle_from_two(a: NDArray[np.float64], b: NDArray[np.float64]) -> tuple[np
 def _circle_from_three(
     a: NDArray[np.float64], b: NDArray[np.float64], c: NDArray[np.float64]
 ) -> tuple[np.ndarray, float] | None:
-    cross = np.cross(b - a, c - a)
+    ab = b - a
+    ac = c - a
+    cross = ab[0] * ac[1] - ab[1] * ac[0]
     if abs(float(cross)) < 1e-12:
         return None
     denominator = 2.0 * float(cross)
@@ -65,6 +70,50 @@ def minimum_enclosing_circle(points: NDArray[np.float64]) -> tuple[np.ndarray, f
     return center, radius
 
 
+def minimum_enclosing_hexagon(
+    points: NDArray[np.float64],
+) -> tuple[NDArray[np.float64], float]:
+    angles = np.deg2rad(np.arange(30.0, 360.0, 60.0))
+    normals = np.column_stack((np.cos(angles), np.sin(angles)))
+    constraints = []
+    limits = []
+    for point in points:
+        for normal in normals:
+            constraints.append((-normal[0], -normal[1], -_HEX_APOTHEM_RATIO))
+            limits.append(-float(np.dot(normal, point)))
+    result = linprog(
+        c=np.array([0.0, 0.0, 1.0]),
+        A_ub=np.asarray(constraints),
+        b_ub=np.asarray(limits),
+        bounds=((None, None), (None, None), (0.0, None)),
+        method="highs",
+    )
+    if not result.success:
+        raise ValueError(f"Unable to construct a hexagonal footprint: {result.message}")
+    return np.asarray(result.x[:2], dtype=np.float64), float(result.x[2])
+
+
+def footprint_vertices(footprint: Footprint) -> NDArray[np.float64]:
+    if footprint.shape == "square":
+        minimum = footprint.min_xy
+        maximum = footprint.max_xy
+        return np.array(
+            [
+                [minimum[0], minimum[1]],
+                [maximum[0], minimum[1]],
+                [maximum[0], maximum[1]],
+                [minimum[0], maximum[1]],
+            ],
+            dtype=np.float64,
+        )
+    if footprint.shape == "hex":
+        angles = np.deg2rad(np.arange(0.0, 360.0, 60.0))
+        return footprint.center + footprint.radius * np.column_stack(
+            (np.cos(angles), np.sin(angles))
+        )
+    raise ValueError("Circular footprints do not have polygon vertices.")
+
+
 def create_footprint(
     points: NDArray[np.float64],
     shape: Shape,
@@ -74,6 +123,9 @@ def create_footprint(
     padding = boundary_percent / 100.0
     if shape == "circle":
         center, radius = minimum_enclosing_circle(points)
+        radius *= 1.0 + padding
+    elif shape == "hex":
+        center, radius = minimum_enclosing_hexagon(points)
         radius *= 1.0 + padding
     else:
         minimum = points.min(axis=0)
@@ -95,5 +147,10 @@ def create_model_transform(footprint: Footprint, max_size: float) -> ModelTransf
 def add_route_clearance(
     footprint: Footprint, route_width: float, max_size: float
 ) -> Footprint:
-    factor = max_size / (max_size - route_width)
+    clearance_diameter = (
+        max_size * _HEX_APOTHEM_RATIO if footprint.shape == "hex" else max_size
+    )
+    if route_width >= clearance_diameter:
+        raise ValueError("Route width must be smaller than the footprint width.")
+    factor = clearance_diameter / (clearance_diameter - route_width)
     return Footprint(footprint.shape, footprint.center, footprint.radius * factor)

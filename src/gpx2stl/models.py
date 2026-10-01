@@ -8,7 +8,7 @@ import numpy as np
 from numpy.typing import NDArray
 from pyproj import Transformer
 
-Shape = Literal["square", "circle"]
+Shape = Literal["square", "circle", "hex"]
 TopoSource = Literal["auto", "online", "local"]
 
 
@@ -21,6 +21,10 @@ class Config:
     topo: bool = True
     boundary_percent: float = 10.0
     shape: Shape = "square"
+    text: str | None = None
+    text_height: float = 1.0
+    inner_size_percent: float = 70.0
+    font_file: Path | None = None
     use_3mf: bool = True
     max_size: float = 200.0
     terrain_height: float | None = None

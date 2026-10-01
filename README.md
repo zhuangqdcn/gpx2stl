@@ -2,10 +2,11 @@
 
 Convert GPX tracks and routes into printable terrain models:
 
-- **3MF by default:** two named parts and two materials for Bambu Studio. Filament 1 is the GPX route; filament 2 is the terrain/base.
+- **3MF by default:** named parts and materials for Bambu Studio. Filament 1 is the GPX route, filament 2 is the terrain/base, and optional text is filament 3.
 - **STL on request:** one watertight mesh containing the route and terrain/base.
 - **Flexible topography:** use local GeoTIFF files first or download SRTMGL1/COP30 data from OpenTopography.
-- **Square or circular base:** automatically sized around every track segment and GPX route in the input file.
+- **Square, circular, or hexagonal base:** automatically sized around every track segment and GPX route in the input file.
+- **Optional arc text:** place terrain in a centered circular inset and raise text around it on a flat outer frame.
 
 [中文说明](#中文说明)
 
@@ -51,7 +52,7 @@ Copy `settings.example.json` to `settings.json` and edit the values you want:
 cp settings.example.json settings.json
 ```
 
-JSON keys use the Python/long-option names with underscores, such as `route_width`, `boundary_percent`, `topo_source`, and `topo_dir`. The positional input can also be defaulted with `gpx_file`. Use `use_3mf` for the `--3mf` / `--no-3mf` setting. Unknown keys, invalid JSON, or incorrect value types produce an explicit error. `settings.json` is ignored by Git; `settings.example.json` is tracked as a complete template.
+JSON keys use the Python/long-option names with underscores, such as `route_width`, `boundary_percent`, `inner_size_percent`, `topo_source`, and `topo_dir`. The positional input can also be defaulted with `gpx_file`. Use `use_3mf` for the `--3mf` / `--no-3mf` setting. Relative `font_file` paths are resolved from the settings file like other paths. Unknown keys, invalid JSON, or incorrect value types produce an explicit error. `settings.json` is ignored by Git; `settings.example.json` is tracked as a complete template.
 
 ## Local terrain assets
 
@@ -84,6 +85,15 @@ The command prints timestamped progress messages while it parses the GPX, choose
 # Circular, two-color 3MF with terrain
 python -m gpx2stl route.gpx --shape circle --max-size 180
 
+# Flat-top hexagonal model
+python -m gpx2stl route.gpx --shape hex
+
+# Three-color 3MF: circular terrain inset with raised arc text
+python -m gpx2stl route.gpx --shape hex --text "MOUNT RAINIER"
+
+# Use a custom font for Chinese or another script
+python -m gpx2stl route.gpx --text "路线" --font-file ./fonts/NotoSansCJK-Regular.ttc
+
 # Force one local GeoTIFF (no API key or network)
 python -m gpx2stl route.gpx --topo-source local --topo-file ./terrain.tif
 
@@ -112,9 +122,13 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 | `--route-width` | `1` mm | Printed route ribbon width. |
 | `--route-height` | `2` mm | Route height above terrain in topo mode. |
 | `--topo`, `--no-topo` | topo | Enable or disable terrain. |
-| `--boundary-percent` | `10` | Padding on every square side or added to the minimum-circle radius. |
-| `--shape` | `square` | `square` or `circle`. Squares remain north-up. |
-| `--3mf`, `--no-3mf` | 3MF | Select two-material 3MF or single-mesh STL. |
+| `--boundary-percent` | `10` | Padding added around the minimum selected footprint. |
+| `--shape` | `square` | `square`, `circle`, or flat-top `hex`. Squares remain north-up. |
+| `--text` | none | Raised text following one top-centered arc. Enables the circular terrain inset and flat frame. |
+| `--text-height` | `1` mm | Raised text thickness above the frame. |
+| `--inner-size-percent` | `70` | Terrain inset diameter as a percentage of the outer model width; must be above 0 and below 100. |
+| `--font-file` | built-in | Custom `.ttf`, `.otf`, or `.ttc` font for scripts not covered by the built-in font. |
+| `--3mf`, `--no-3mf` | 3MF | Select multi-material 3MF or single-mesh STL. |
 | `--max-size` | `200` mm | Maximum final X/Y dimension. |
 | `--terrain-height` | automatic | Terrain relief in mm. By default, elevation uses the same real-world-to-model ratio as `--max-size`; an explicit value normalizes relief to that height. |
 | `--base-height` | `2` mm | Solid base thickness. |
@@ -132,7 +146,10 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 - By default, terrain elevations use the same scale as X/Y: the horizontal ratio derived from `--max-size` is applied to the DEM elevation range. For example, a horizontal scale of 1:20,000 also makes 1,000 m of elevation equal 50 mm.
 - Setting `--terrain-height` explicitly overrides true-scale relief and normalizes the DEM minimum-to-maximum range to that many millimeters.
 - Without topo, GPX altitude controls the route top at physical 1:20,000 vertical scale: 1,000 m becomes 50 mm. Internal missing elevations are interpolated; missing endpoint/all elevations are errors.
-- Square output is the smallest north-up square around the route before padding. Circle output uses the true minimum enclosing circle before padding.
+- Square output is the smallest north-up square around the route before padding. Circle output uses the true minimum enclosing circle. Hex output uses the minimum translated flat-top regular hexagon.
+- When `--text` is present, `--max-size` controls the outer square, circle, or hex frame. Terrain and route are instead scaled into a centered circle controlled by `--inner-size-percent`; the rest of the frame stays flat at the base-top height.
+- Text uses the built-in DejaVu Sans font for Latin letters, digits, and punctuation. Characters are placed tangent to a top-centered arc and automatically reduced to fit. Use `--font-file` for Chinese or other scripts; missing glyphs are reported as errors.
+- In STL output, raised text is unioned with the frame, route, and terrain into one watertight mesh.
 - Routes crossing the ±180° antimeridian are supported by split DEM requests.
 
 ## Topography source behavior
@@ -158,8 +175,9 @@ Import the generated 3MF as one object with multiple parts if prompted. The mode
 
 1. `GPX route` / `Filament 1 - Route`
 2. `Topography` / `Filament 2 - Topography`
+3. `Text` / `Filament 3 - Text` when `--text` is supplied
 
-Confirm or remap those two parts to the desired AMS/filament slots before slicing.
+Confirm or remap the parts to the desired AMS/filament slots before slicing.
 
 ## Development
 
@@ -181,10 +199,11 @@ This project is licensed under the [MIT License](LICENSE). Terrain datasets rema
 
 `gpx2stl` 可将 GPX 轨迹和路线转换为适合 3D 打印的地形模型：
 
-- **默认输出 3MF：**包含两个命名部件和两种材料，可导入 Bambu Studio。耗材 1 用于 GPX 路线，耗材 2 用于地形/底座。
+- **默认输出 3MF：**包含可导入 Bambu Studio 的命名部件和材料。耗材 1 用于 GPX 路线，耗材 2 用于地形/底座，可选文字使用耗材 3。
 - **可选输出 STL：**路线与地形/底座合并为一个水密网格。
 - **灵活的真实地形：**优先使用本地 GeoTIFF，或通过 OpenTopography 下载 SRTMGL1/COP30 高程数据。
-- **方形或圆形底座：**根据输入文件中的全部轨迹段和 GPX 路线自动确定范围。
+- **方形、圆形或六边形底座：**根据输入文件中的全部轨迹段和 GPX 路线自动确定范围。
+- **可选弧形文字：**将地形放入居中的圆形区域，并在平坦外框上生成环绕文字。
 
 ## 环境要求
 
@@ -228,7 +247,7 @@ OPENTOPOGRAPHY_API_KEY=你的API密钥
 cp settings.example.json settings.json
 ```
 
-JSON 键使用 Python/长参数对应的下划线名称，例如 `route_width`、`boundary_percent`、`topo_source` 和 `topo_dir`。也可用 `gpx_file` 设置默认输入文件；`--3mf` / `--no-3mf` 对应 `use_3mf`。未知键、无效 JSON 或错误的数据类型都会产生明确错误。`settings.json` 已被 Git 忽略，而完整模板 `settings.example.json` 会纳入版本控制。
+JSON 键使用 Python/长参数对应的下划线名称，例如 `route_width`、`boundary_percent`、`inner_size_percent`、`topo_source` 和 `topo_dir`。也可用 `gpx_file` 设置默认输入文件；`--3mf` / `--no-3mf` 对应 `use_3mf`。相对 `font_file` 路径与其他路径一样，以设置文件所在目录为基准解析。未知键、无效 JSON 或错误的数据类型都会产生明确错误。`settings.json` 已被 Git 忽略，而完整模板 `settings.example.json` 会纳入版本控制。
 
 ## 本地地形资源
 
@@ -261,6 +280,15 @@ python -m gpx2stl route.gpx
 # 带地形的圆形双色 3MF
 python -m gpx2stl route.gpx --shape circle --max-size 180
 
+# 平顶正六边形模型
+python -m gpx2stl route.gpx --shape hex
+
+# 三色 3MF：圆形地形区域和凸起弧形文字
+python -m gpx2stl route.gpx --shape hex --text "MOUNT RAINIER"
+
+# 中文或其他文字使用自定义字体
+python -m gpx2stl route.gpx --text "路线" --font-file ./fonts/NotoSansCJK-Regular.ttc
+
 # 强制使用一个本地 GeoTIFF（无需 API Key 或网络）
 python -m gpx2stl route.gpx --topo-source local --topo-file ./terrain.tif
 
@@ -289,9 +317,13 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 | `--route-width` | `1` mm | 打印路线带宽度。 |
 | `--route-height` | `2` mm | 启用地形时路线高出地形的高度。 |
 | `--topo`, `--no-topo` | 启用 | 启用或禁用地形。 |
-| `--boundary-percent` | `10` | 方形每边或最小包围圆半径增加的百分比。 |
-| `--shape` | `square` | `square`（方形）或 `circle`（圆形）；方形保持正北朝上。 |
-| `--3mf`, `--no-3mf` | 3MF | 选择双色 3MF 或单网格 STL。 |
+| `--boundary-percent` | `10` | 在所选最小外形周围增加的边界百分比。 |
+| `--shape` | `square` | `square`（方形）、`circle`（圆形）或平顶 `hex`（正六边形）；方形保持正北朝上。 |
+| `--text` | 无 | 沿顶部居中圆弧排列的凸起文字；启用圆形地形区域和平坦外框。 |
+| `--text-height` | `1` mm | 文字高出外框的厚度。 |
+| `--inner-size-percent` | `70` | 圆形地形区域直径占模型外宽的百分比；必须大于 0 且小于 100。 |
+| `--font-file` | 内置字体 | 为内置字体未覆盖的文字系统指定自定义 `.ttf`、`.otf` 或 `.ttc` 字体。 |
+| `--3mf`, `--no-3mf` | 3MF | 选择多材料 3MF 或单网格 STL。 |
 | `--max-size` | `200` mm | 最终模型 X/Y 最大尺寸。 |
 | `--terrain-height` | 自动 | 地形高度差（mm）。默认使用与 `--max-size` 相同的真实世界到模型比例；显式设置后会将地形高度差归一化到该值。 |
 | `--base-height` | `2` mm | 实体底座厚度。 |
@@ -309,7 +341,10 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 - 默认情况下，地形高程与 X/Y 使用相同比例：由 `--max-size` 得出的水平缩放比例也应用于 DEM 高程范围。例如，水平比例为 1:20,000 时，1,000 m 高程同样对应 50 mm。
 - 显式设置 `--terrain-height` 会覆盖真实比例，将 DEM 最低点到最高点的高度差归一化到指定毫米数。
 - 禁用地形时，路线顶部采用 GPX 高程和真实的 1:20,000 垂直比例：1,000 m 对应 50 mm。内部缺失高程会插值；端点或全部高程缺失会报错。
-- 方形为加边界前包围路线的最小正北方形；圆形为加边界前的真实最小包围圆。
+- 方形为加边界前包围路线的最小正北方形；圆形为真实最小包围圆；六边形为可平移的最小平顶正六边形。
+- 指定 `--text` 后，`--max-size` 控制方形、圆形或六边形外框尺寸。地形和路线会缩放到由 `--inner-size-percent` 控制的居中圆形区域，其余外框保持在底座顶面的平坦高度。
+- 拉丁字母、数字和标点默认使用内置 DejaVu Sans 字体。每个字符沿顶部居中圆弧切向排列，并自动缩小以适应空间。中文或其他文字请使用 `--font-file`；字体缺少字形时会明确报错。
+- 输出 STL 时，凸起文字会与外框、路线和地形合并为一个水密网格。
 - 支持跨越 ±180° 日期变更线的路线；此时会拆分 DEM 请求。
 
 ## 地形数据源规则
@@ -335,8 +370,9 @@ OpenTopography 要求 API Key，并有请求范围和频率限制。API、认证
 
 1. `GPX route` / `Filament 1 - Route`
 2. `Topography` / `Filament 2 - Topography`
+3. 指定 `--text` 时包含 `Text` / `Filament 3 - Text`
 
-切片前请确认这两个部件分别映射到正确的 AMS/耗材槽位。
+切片前请确认各部件分别映射到正确的 AMS/耗材槽位。
 
 ## 开发与测试
 

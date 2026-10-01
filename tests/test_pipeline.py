@@ -78,9 +78,34 @@ def test_conversion_reports_meaningful_progress(
     assert any(message.startswith("Created square footprint") for message in messages)
     assert "Topography disabled; generating a flat base" in messages
     assert "Generating watertight terrain/base and route meshes" in messages
-    assert "Writing two-material 3MF package" in messages
+    assert "Writing 2-material 3MF package" in messages
     assert "Validated 3MF mesh and material resources" in messages
     assert messages[-1] == f"Finished writing {output}"
+
+
+def test_text_conversion_uses_circular_inset_and_three_materials(
+    simple_gpx: Path, tmp_path: Path
+) -> None:
+    output = tmp_path / "text.3mf"
+    messages: list[str] = []
+    convert(
+        Config(
+            gpx_file=simple_gpx,
+            output=output,
+            topo=False,
+            shape="hex",
+            text="TRAIL",
+            max_size=20.0,
+        ),
+        progress=messages.append,
+    )
+    assert output.is_file()
+    assert any(
+        message.startswith("Created hex frame with 14.0 mm circular terrain inset")
+        for message in messages
+    )
+    assert any(message.startswith("Generated text mesh") for message in messages)
+    assert "Writing 3-material 3MF package" in messages
 
 
 def test_auto_prefers_local_without_api_key(

@@ -4,12 +4,18 @@ import math
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from functools import partial
+from pathlib import Path
 
 import numpy as np
 import shapely
 import trimesh
+from matplotlib import font_manager
+from matplotlib.font_manager import FontProperties
+from matplotlib.ft2font import FT2Font
+from matplotlib.textpath import TextPath, TextToPath
 from numpy.typing import NDArray
 from scipy.interpolate import LinearNDInterpolator, NearestNDInterpolator
+from scipy.spatial import Delaunay
 from shapely.geometry import LineString, MultiPolygon, Point, Polygon
 
 from gpx2stl.dem import DemSource, fill_missing
@@ -23,6 +29,7 @@ HeightFunction = Callable[[NDArray[np.float64]], NDArray[np.float64]]
 class Geometry:
     terrain: trimesh.Trimesh
     route: trimesh.Trimesh
+    text: trimesh.Trimesh | None = None
 
 
 def _terrain_relief_height(
@@ -55,6 +62,115 @@ def _surface_sampler(
         return result
 
     return sample
+
+
+def _model_outline(shape: str, diameter: float, segments: int = 128) -> NDArray[np.float64]:
+    radius = diameter / 2.0
+    if shape == "square":
+        return np.array(
+            [
+                [-radius, -radius],
+                [radius, -radius],
+                [radius, radius],
+                [-radius, radius],
+            ],
+            dtype=np.float64,
+        )
+    count = 6 if shape == "hex" else segments
+    angles = np.linspace(0.0, 2.0 * math.pi, count, endpoint=False)
+    return radius * np.column_stack((np.cos(angles), np.sin(angles)))
+
+
+def _convex_prism(outline: NDArray[np.float64], height: float) -> trimesh.Trimesh:
+    count = len(outline)
+    vertices = np.vstack(
+        (
+            np.column_stack((outline, np.full(count, height))),
+            np.column_stack((outline, np.zeros(count))),
+        )
+    )
+    faces: list[tuple[int, int, int]] = []
+    for index in range(1, count - 1):
+        faces.append((0, index, index + 1))
+        faces.append((count, count + index + 1, count + index))
+    _add_side_faces(faces, list(range(count)), count)
+    return trimesh.Trimesh(vertices=vertices, faces=np.asarray(faces), process=True)
+
+
+def _polygon_terrain(
+    footprint: Footprint,
+    transform: ModelTransform,
+    raw_height: Callable[[NDArray[np.float64]], NDArray[np.float64]] | None,
+    config: Config,
+) -> tuple[trimesh.Trimesh, HeightFunction]:
+    outline = transform.to_model(
+        np.asarray(
+            [
+                footprint.center
+                + footprint.radius * np.array([math.cos(angle), math.sin(angle)])
+                for angle in np.deg2rad(np.arange(0.0, 360.0, 60.0))
+            ]
+        )
+    )
+    polygon = Polygon(outline)
+    resolution = _model_resolution(config.max_size)
+    spacing = footprint.diameter * transform.scale / (resolution - 1)
+    minimum_x, minimum_y, maximum_x, maximum_y = polygon.bounds
+    x_axis = np.arange(minimum_x, maximum_x + spacing * 0.5, spacing)
+    y_axis = np.arange(minimum_y, maximum_y + spacing * 0.5, spacing)
+    samples = [
+        (x, y)
+        for y in y_axis
+        for x in x_axis
+        if polygon.contains(Point(float(x), float(y)))
+    ]
+    perimeter = [(float(point[0]), float(point[1])) for point in outline]
+    points = np.asarray([*perimeter, *samples], dtype=np.float64)
+    points = np.unique(np.round(points, decimals=10), axis=0)
+    index_by_coordinate = {
+        (float(point[0]), float(point[1])): index for index, point in enumerate(points)
+    }
+    perimeter_indices = [
+        index_by_coordinate[(round(x, 10), round(y, 10))] for x, y in perimeter
+    ]
+    triangulation = Delaunay(points)
+    triangles = [
+        tuple(int(index) for index in simplex)
+        for simplex in triangulation.simplices
+        if polygon.covers(Point(np.mean(points[simplex], axis=0)))
+    ]
+    if raw_height is None:
+        top = np.full(len(points), config.base_height, dtype=np.float64)
+    else:
+        raw = np.asarray(raw_height(points), dtype=np.float64)
+        missing = ~np.isfinite(raw)
+        if np.all(missing):
+            raise Gpx2StlError("The selected DEM contains no usable elevation samples.")
+        if np.any(missing):
+            nearest = NearestNDInterpolator(points[~missing], raw[~missing])
+            raw[missing] = nearest(points[missing])
+        top = config.base_height + _terrain_relief_height(
+            raw, transform, config.terrain_height
+        )
+
+    count = len(points)
+    vertices = np.vstack(
+        (
+            np.column_stack((points, top)),
+            np.column_stack((points, np.zeros(count))),
+        )
+    )
+    faces: list[tuple[int, int, int]] = []
+    for a, b, c in triangles:
+        ab = points[b] - points[a]
+        ac = points[c] - points[a]
+        cross = ab[0] * ac[1] - ab[1] * ac[0]
+        if float(cross) < 0:
+            b, c = c, b
+        faces.extend(((a, b, c), (count + a, count + c, count + b)))
+    _add_side_faces(faces, perimeter_indices, count)
+    mesh = trimesh.Trimesh(vertices=vertices, faces=np.asarray(faces), process=True)
+    return mesh, _surface_sampler(points, top)
 
 
 def _structured_square(
@@ -173,6 +289,152 @@ def _polar_circle(
     return mesh, _surface_sampler(xy, top)
 
 
+def _union_meshes(meshes: list[trimesh.Trimesh], description: str) -> trimesh.Trimesh:
+    try:
+        combined = trimesh.boolean.union(
+            meshes,
+            engine="manifold",
+            check_volume=True,
+        )
+    except Exception as exc:
+        raise Gpx2StlError(f"Unable to combine {description}: {exc}") from exc
+    if not isinstance(combined, trimesh.Trimesh) or combined.is_empty:
+        raise Gpx2StlError(f"Unable to combine {description}.")
+    combined.remove_unreferenced_vertices()
+    return combined
+
+
+def _font_properties(config: Config) -> tuple[FontProperties, Path]:
+    if config.font_file is not None:
+        path = config.font_file
+        properties = FontProperties(fname=str(path), size=1.0)
+    else:
+        properties = FontProperties(family="DejaVu Sans", size=1.0)
+        path = Path(font_manager.findfont(properties, fallback_to_default=False))
+    return properties, path
+
+
+def _glyph_geometry(path: TextPath) -> Polygon | MultiPolygon:
+    contours = []
+    for coordinates in path.to_polygons():
+        if len(coordinates) >= 3:
+            polygon = Polygon(coordinates)
+            if polygon.is_valid and polygon.area > 1e-12:
+                contours.append(polygon)
+    if not contours:
+        return MultiPolygon()
+    geometry = contours[0]
+    for contour in contours[1:]:
+        geometry = geometry.symmetric_difference(contour)
+    if not geometry.is_valid:
+        geometry = shapely.make_valid(geometry)
+    polygons = list(_polygon_parts(geometry))
+    return MultiPolygon(polygons) if len(polygons) > 1 else polygons[0]
+
+
+def _text_mesh(config: Config, inner_radius: float) -> trimesh.Trimesh:
+    assert config.text is not None
+    properties, font_path = _font_properties(config)
+    try:
+        font = FT2Font(font_path)
+    except Exception as exc:
+        raise Gpx2StlError(f"Unable to load font '{font_path}': {exc}") from exc
+    missing = sorted(
+        {
+            character
+            for character in config.text
+            if not character.isspace() and font.get_char_index(ord(character)) == 0
+        }
+    )
+    if missing:
+        rendered = ", ".join(repr(character) for character in missing)
+        raise Gpx2StlError(f"Font '{font_path}' does not contain glyphs for: {rendered}")
+
+    outer_radius = config.max_size / 2.0
+    outer_apothem = (
+        outer_radius * math.sqrt(3.0) / 2.0
+        if config.shape == "hex"
+        else outer_radius
+    )
+    frame_width = outer_apothem - inner_radius
+    margin = max(0.5, frame_width * 0.1)
+    available_height = frame_width - 2.0 * margin
+    if available_height <= 0:
+        raise Gpx2StlError(
+            "The text frame is too narrow; reduce --inner-size-percent."
+        )
+
+    text_to_path = TextToPath()
+    advances = np.asarray(
+        [
+            text_to_path.get_text_width_height_descent(
+                character, properties, ismath=False
+            )[0]
+            for character in config.text
+        ],
+        dtype=np.float64,
+    )
+    total_advance = float(np.sum(advances))
+    unit_path = TextPath((0.0, 0.0), config.text, size=1.0, prop=properties)
+    bounds = unit_path.get_extents()
+    unit_height = float(bounds.height)
+    if total_advance <= 0 or unit_height <= 0:
+        raise Gpx2StlError("The requested text has no printable glyph outlines.")
+
+    arc_radius = inner_radius + frame_width / 2.0
+    maximum_arc = math.radians(140.0)
+    font_size = min(
+        available_height / unit_height,
+        arc_radius * maximum_arc / total_advance,
+    ) * 0.9
+    if not math.isfinite(font_size) or font_size <= 0:
+        raise Gpx2StlError("Unable to fit text in the available frame.")
+
+    scaled_advances = advances * font_size
+    cursor = -float(np.sum(scaled_advances)) / 2.0
+    vertical_center = (float(bounds.ymin) + float(bounds.ymax)) * font_size / 2.0
+    components: list[trimesh.Trimesh] = []
+    for character, advance in zip(config.text, scaled_advances):
+        midpoint = cursor + advance / 2.0
+        cursor += advance
+        if character.isspace():
+            continue
+        glyph_path = TextPath(
+            (-advance / 2.0, -vertical_center),
+            character,
+            size=font_size,
+            prop=properties,
+        )
+        glyph = _glyph_geometry(glyph_path)
+        angle = math.pi / 2.0 - midpoint / arc_radius
+        rotation = angle - math.pi / 2.0
+        for polygon in _polygon_parts(glyph):
+            try:
+                mesh = trimesh.creation.extrude_polygon(
+                    polygon,
+                    height=config.text_height + 0.05,
+                )
+            except Exception as exc:
+                raise Gpx2StlError(
+                    f"Unable to create text geometry for {character!r}: {exc}"
+                ) from exc
+            transform = trimesh.transformations.rotation_matrix(
+                rotation, [0.0, 0.0, 1.0]
+            )
+            transform[:2, 3] = [
+                arc_radius * math.cos(angle),
+                arc_radius * math.sin(angle),
+            ]
+            transform[2, 3] = config.base_height - 0.05
+            mesh.apply_transform(transform)
+            components.append(mesh)
+    if not components:
+        raise Gpx2StlError("The requested text has no printable glyph outlines.")
+    text_mesh = trimesh.util.concatenate(components)
+    text_mesh.remove_unreferenced_vertices()
+    return text_mesh
+
+
 def _add_side_faces(
     faces: list[tuple[int, int, int]], perimeter: list[int], bottom_offset: int
 ) -> None:
@@ -195,11 +457,14 @@ def _raw_height_function(
     return sample
 
 
-def _polygon_parts(geometry: Polygon | MultiPolygon) -> Iterable[Polygon]:
+def _polygon_parts(geometry: object) -> Iterable[Polygon]:
     if isinstance(geometry, Polygon):
         yield geometry
-    else:
+    elif isinstance(geometry, MultiPolygon):
         yield from geometry.geoms
+    elif hasattr(geometry, "geoms"):
+        for part in geometry.geoms:
+            yield from _polygon_parts(part)
 
 
 def _variable_extrusion(
@@ -327,14 +592,40 @@ def build_geometry(
     dem: DemSource | None,
 ) -> Geometry:
     raw_height = None if dem is None else _raw_height_function(dem, route, transform)
-    if footprint.shape == "square":
+    if config.text is not None:
+        if footprint.shape != "circle":
+            raise Gpx2StlError("Text layout requires a circular terrain footprint.")
+        inner_terrain, surface = _polar_circle(
+            footprint, transform, raw_height, config
+        )
+        outer_base = _convex_prism(
+            _model_outline(config.shape, config.max_size),
+            config.base_height,
+        )
+        terrain = _union_meshes(
+            [outer_base, inner_terrain],
+            "the outer frame and terrain",
+        )
+        text_mesh = _text_mesh(
+            config,
+            footprint.radius * transform.scale,
+        )
+    elif footprint.shape == "square":
         terrain, surface = _structured_square(footprint, transform, raw_height, config)
-    else:
+        text_mesh = None
+    elif footprint.shape == "circle":
         terrain, surface = _polar_circle(footprint, transform, raw_height, config)
+        text_mesh = None
+    else:
+        terrain, surface = _polygon_terrain(footprint, transform, raw_height, config)
+        text_mesh = None
     route_mesh = _route_mesh(route, transform, surface, config)
-    for name, mesh in (("terrain/base", terrain), ("route", route_mesh)):
+    meshes = [("terrain/base", terrain), ("route", route_mesh)]
+    if text_mesh is not None:
+        meshes.append(("text", text_mesh))
+    for name, mesh in meshes:
         if not mesh.is_watertight:
             raise Gpx2StlError(f"Generated {name} mesh is not watertight.")
         if not np.all(np.isfinite(mesh.vertices)) or mesh.volume <= 0:
             raise Gpx2StlError(f"Generated {name} mesh is invalid.")
-    return Geometry(terrain=terrain, route=route_mesh)
+    return Geometry(terrain=terrain, route=route_mesh, text=text_mesh)

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "gpx2stl"
 version = "0.1.0"
-description = "Convert GPX routes into printable terrain STL and two-color 3MF models"
+description = "Convert GPX routes into printable terrain STL and multi-color 3MF models"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -13,6 +13,7 @@ dependencies = [
     "gpxpy>=1.6,<2",
     "lib3mf>=2.3,<3",
     "manifold3d>=3,<4",
+    "matplotlib>=3.8,<4",
     "numpy>=1.26,<3",
     "python-dotenv>=1.0,<2",
     "pyproj>=3.6,<4",
