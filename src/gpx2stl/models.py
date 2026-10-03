@@ -24,6 +24,7 @@ class Config:
     text: str | None = None
     text_height: float = 1.0
     text_margin: float | None = None
+    text_end_gap: float = 0.0
     inner_size_percent: float = 70.0
     font_file: Path | None = None
     base_stl: Path | None = None

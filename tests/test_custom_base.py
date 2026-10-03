@@ -14,6 +14,7 @@ from gpx2stl.export import export_geometry
 from gpx2stl.gpx import interpolate_elevations, project_paths, read_gpx
 from gpx2stl.mesh import (
     _add_side_faces,
+    _custom_text_layout,
     _custom_text_polygons,
     _triangulated_polygon_points,
     _triangulated_surface_sampler,
@@ -420,6 +421,28 @@ def test_custom_base_text_wraps_once_around_flat_border(
     assert bounds[2] - bounds[0] > 0.7 * (top_bounds[2] - top_bounds[0])
     assert bounds[3] - bounds[1] > 0.7 * (top_bounds[3] - top_bounds[1])
     assert all(border.covers(polygon) for polygon in polygons)
+
+
+def test_custom_base_text_seam_is_bottom_centered(
+    simple_gpx: Path, tmp_path: Path
+) -> None:
+    base = _write_base(
+        tmp_path / "base.stl",
+        Polygon([(-30, -20), (30, -20), (30, 20), (-30, 20)]),
+    )
+    route = _route(simple_gpx)
+    custom = prepare_custom_base(base, 15.0, route, 1.0)
+    config = Config(
+        gpx_file=simple_gpx,
+        output=tmp_path / "unused.3mf",
+        topo=False,
+        text="TRAIL",
+        base_stl=base,
+    )
+    layout = _custom_text_layout(config, custom)
+    assert layout.seam_point[0] == pytest.approx(0.0, abs=1e-6)
+    assert layout.seam_point[1] < 0.0
+    assert layout.seam_gap > 0.0
 
 
 def test_custom_base_text_margin_controls_border_clearance(

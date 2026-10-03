@@ -9,6 +9,7 @@
   "text": null,
   "text_height": 1.0,
   "text_margin": null,
+  "text_end_gap": 0.0,
   "inner_size_percent": 70.0,
   "font_file": null,
   "base_stl": null,

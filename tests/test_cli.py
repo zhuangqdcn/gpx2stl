@@ -29,6 +29,7 @@ def test_cli_defaults(simple_gpx: Path, monkeypatch: pytest.MonkeyPatch) -> None
     assert config.text is None
     assert config.text_height == 1.0
     assert config.text_margin is None
+    assert config.text_end_gap == 0.0
     assert config.inner_size_percent == 70.0
     assert config.font_file is None
     assert config.base_stl is None
@@ -148,6 +149,7 @@ def test_every_cli_parameter_overrides_settings_defaults() -> None:
         "text": "SETTINGS",
         "text_height": 1.0,
         "text_margin": 0.5,
+        "text_end_gap": 1.0,
         "inner_size_percent": 70.0,
         "font_file": "settings.ttf",
         "base_stl": "settings.stl",
@@ -182,6 +184,8 @@ def test_every_cli_parameter_overrides_settings_defaults() -> None:
             "1.5",
             "--text-margin",
             "2",
+            "--text-end-gap",
+            "3",
             "--inner-size-percent",
             "65",
             "--font-file",
@@ -219,6 +223,7 @@ def test_every_cli_parameter_overrides_settings_defaults() -> None:
     assert args.text == "CLI"
     assert args.text_height == 1.5
     assert args.text_margin == 2.0
+    assert args.text_end_gap == 3.0
     assert args.inner_size_percent == 65.0
     assert args.font_file == Path("cli.otf")
     assert args.base_stl == Path("cli.stl")
@@ -330,9 +335,42 @@ def test_settings_allow_automatic_text_margin(simple_gpx: Path) -> None:
     assert config.text_margin is None
 
 
+def test_text_preserves_leading_and_trailing_spaces(simple_gpx: Path) -> None:
+    parser = create_parser()
+    config = config_from_args(
+        parser.parse_args([str(simple_gpx), "--no-topo", "--text", "  TRAIL   "]),
+        parser,
+    )
+    assert config.text == "  TRAIL   "
+
+
+def test_text_rejects_only_whitespace(simple_gpx: Path) -> None:
+    parser = create_parser()
+    with pytest.raises(SystemExit):
+        config_from_args(
+            parser.parse_args([str(simple_gpx), "--no-topo", "--text", "   "]),
+            parser,
+        )
+
+
 @pytest.mark.parametrize("value", [-1.0, "wide", True])
 def test_settings_reject_invalid_text_margin(simple_gpx: Path, value: object) -> None:
     parser = create_parser({"text_margin": value, "topo": False})
+    with pytest.raises(SystemExit):
+        config_from_args(parser.parse_args([str(simple_gpx)]), parser)
+
+
+def test_text_end_gap_must_be_nonnegative(simple_gpx: Path) -> None:
+    parser = create_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args([str(simple_gpx), "--no-topo", "--text-end-gap", "-1"])
+
+
+@pytest.mark.parametrize("value", [-1.0, "wide", True])
+def test_settings_reject_invalid_text_end_gap(
+    simple_gpx: Path, value: object
+) -> None:
+    parser = create_parser({"text_end_gap": value, "topo": False})
     with pytest.raises(SystemExit):
         config_from_args(parser.parse_args([str(simple_gpx)]), parser)
 

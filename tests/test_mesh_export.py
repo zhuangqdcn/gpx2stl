@@ -6,6 +6,7 @@ import lib3mf
 import numpy as np
 import pytest
 import trimesh
+from matplotlib.textpath import TextToPath
 
 from gpx2stl.errors import Gpx2StlError
 from gpx2stl.export import export_geometry
@@ -15,7 +16,7 @@ from gpx2stl.footprint import (
     create_model_transform,
 )
 from gpx2stl.gpx import interpolate_elevations, project_paths, read_gpx
-from gpx2stl.mesh import build_geometry
+from gpx2stl.mesh import _font_properties, _generated_text_layout, build_geometry
 from gpx2stl.models import Config, Shape
 
 
@@ -95,6 +96,7 @@ def _text_geometry(
     shape: Shape = "hex",
     text: str = "TRAIL O",
     text_margin: float | None = None,
+    text_end_gap: float = 0.0,
 ):
     paths = tuple(interpolate_elevations(path) for path in read_gpx(simple_gpx))
     route = project_paths(paths)
@@ -110,6 +112,7 @@ def _text_geometry(
         text=text,
         text_height=1.0,
         text_margin=text_margin,
+        text_end_gap=text_end_gap,
         inner_size_percent=70.0,
         use_3mf=use_3mf,
         max_size=20.0,
@@ -135,6 +138,64 @@ def test_text_layout_has_watertight_frame_route_and_text(
     assert np.isclose(np.ptp(geometry.terrain.vertices[:, 0]), config.max_size)
     assert np.max(geometry.text.vertices[:, 2]) > config.base_height
     assert np.min(geometry.text.vertices[:, 2]) < config.base_height
+
+
+@pytest.mark.parametrize("shape", ["square", "circle", "hex"])
+def test_generated_text_wraps_full_perimeter_with_bottom_seam(
+    simple_gpx: Path, tmp_path: Path, shape: Shape
+) -> None:
+    _, config = _text_geometry(
+        simple_gpx,
+        tmp_path / "unused.3mf",
+        True,
+        shape=shape,
+    )
+    layout = _generated_text_layout(config, 7.0)
+    bounds = np.asarray(
+        [
+            min(polygon.bounds[0] for polygon in layout.polygons),
+            min(polygon.bounds[1] for polygon in layout.polygons),
+            max(polygon.bounds[2] for polygon in layout.polygons),
+            max(polygon.bounds[3] for polygon in layout.polygons),
+        ]
+    )
+    assert np.ptp(bounds[[0, 2]]) > config.max_size * 0.6
+    assert np.ptp(bounds[[1, 3]]) > config.max_size * 0.6
+    assert layout.seam_point[0] == pytest.approx(0.0, abs=1e-6)
+    assert layout.seam_point[1] < 0.0
+
+
+def test_text_seam_combines_default_spaces_edge_spaces_and_millimeters(
+    simple_gpx: Path, tmp_path: Path
+) -> None:
+    _, config = _text_geometry(
+        simple_gpx,
+        tmp_path / "unused.3mf",
+        True,
+        shape="circle",
+        text="  TRAIL   ",
+        text_end_gap=2.0,
+    )
+    layout = _generated_text_layout(config, 7.0)
+    properties, _ = _font_properties(config)
+    space_advance = TextToPath().get_text_width_height_descent(
+        " ", properties, ismath=False
+    )[0]
+    expected = 13.0 * space_advance * layout.font_size + 2.0
+    assert layout.seam_gap == pytest.approx(expected)
+
+
+def test_text_end_gap_reports_when_perimeter_is_too_short(
+    simple_gpx: Path, tmp_path: Path
+) -> None:
+    with pytest.raises(Gpx2StlError, match="--text-end-gap"):
+        _text_geometry(
+            simple_gpx,
+            tmp_path / "unused.3mf",
+            True,
+            shape="circle",
+            text_end_gap=100.0,
+        )
 
 
 def test_text_margin_controls_generated_frame_clearance(

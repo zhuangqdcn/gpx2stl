@@ -36,6 +36,17 @@ class Geometry:
     text: trimesh.Trimesh | None = None
 
 
+@dataclass(frozen=True)
+class _PerimeterTextLayout:
+    polygons: tuple[Polygon, ...]
+    font_size: float
+    seam_gap: float
+    seam_distance: float
+    seam_point: tuple[float, float]
+    perimeter: float
+    glyph_distances: tuple[float, ...]
+
+
 def _terrain_relief_height(
     raw: NDArray[np.float64],
     transform: ModelTransform,
@@ -486,7 +497,24 @@ def _glyph_geometry(path: TextPath) -> Polygon | MultiPolygon:
     return MultiPolygon(polygons) if len(polygons) > 1 else polygons[0]
 
 
-def _text_mesh(config: Config, inner_radius: float) -> trimesh.Trimesh:
+def _clockwise_centerline(polygon: Polygon) -> LineString:
+    coordinates = list(polygon.exterior.coords)
+    line = LineString(coordinates)
+    if shapely.is_ccw(line):
+        line = LineString(coordinates[::-1])
+    return line
+
+
+def _perimeter_text_layout(
+    config: Config,
+    *,
+    text_area: object,
+    centerline_polygon: Polygon,
+    outer_polygon: Polygon,
+    available_height: float,
+    description: str,
+    fit_guidance: str,
+) -> _PerimeterTextLayout:
     assert config.text is not None
     properties, font_path = _font_properties(config)
     try:
@@ -504,11 +532,188 @@ def _text_mesh(config: Config, inner_radius: float) -> trimesh.Trimesh:
         rendered = ", ".join(repr(character) for character in missing)
         raise Gpx2StlError(f"Font '{font_path}' does not contain glyphs for: {rendered}")
 
-    outer_radius = config.max_size / 2.0
+    if available_height <= 0:
+        raise Gpx2StlError(
+            f"The {description} is too narrow for text; reduce --text-margin "
+            f"or {fit_guidance}."
+        )
+
+    text = config.text
+    first = 0
+    while first < len(text) and text[first].isspace():
+        first += 1
+    last = len(text)
+    while last > first and text[last - 1].isspace():
+        last -= 1
+    core_text = text[first:last]
+    if not core_text:
+        raise Gpx2StlError("The requested text has no printable glyph outlines.")
+    edge_whitespace = text[:first] + text[last:]
+
+    centerline = _clockwise_centerline(centerline_polygon)
+    perimeter = centerline.length
+    if perimeter <= 1e-6:
+        raise Gpx2StlError(f"The {description} is too small for text.")
+    bottom_center = Point(outer_polygon.centroid.x, outer_polygon.bounds[1])
+    seam_distance = centerline.project(bottom_center)
+
+    text_to_path = TextToPath()
+    advances = np.asarray(
+        [
+            text_to_path.get_text_width_height_descent(
+                character, properties, ismath=False
+            )[0]
+            for character in core_text
+        ],
+        dtype=np.float64,
+    )
+    total_advance = float(np.sum(advances))
+    space_advance = text_to_path.get_text_width_height_descent(
+        " ", properties, ismath=False
+    )[0]
+    space_advance = max(space_advance, 0.25)
+    edge_advance = sum(
+        text_to_path.get_text_width_height_descent(
+            character, properties, ismath=False
+        )[0]
+        for character in edge_whitespace
+    )
+    seam_advance = 8.0 * space_advance + edge_advance
+    unit_path = TextPath((0.0, 0.0), core_text, size=1.0, prop=properties)
+    bounds = unit_path.get_extents()
+    unit_height = float(bounds.height)
+    if total_advance <= 0 or unit_height <= 0:
+        raise Gpx2StlError("The requested text has no printable glyph outlines.")
+    available_perimeter = perimeter - config.text_end_gap
+    if available_perimeter <= 0:
+        raise Gpx2StlError(
+            f"The requested --text-end-gap is too large for the {description}."
+        )
+    maximum_size = min(
+        available_height * 0.98 / unit_height,
+        available_perimeter * 0.98 / (total_advance + seam_advance),
+    )
+    tangent_delta = max(
+        1e-5,
+        min(available_height / 20.0, perimeter / 10000.0),
+    )
+    containment_area = shapely.buffer(text_area, 1e-7)
+
+    def place(font_size: float) -> _PerimeterTextLayout | None:
+        scaled_advances = advances * font_size
+        seam_gap = seam_advance * font_size + config.text_end_gap
+        remaining = perimeter - seam_gap - float(np.sum(scaled_advances))
+        if remaining < 0:
+            return None
+        if len(core_text) == 1:
+            tracking = 0.0
+            cursor = seam_distance + seam_gap / 2.0 + remaining / 2.0
+        else:
+            tracking = remaining / (len(core_text) - 1)
+            cursor = seam_distance + seam_gap / 2.0
+        vertical_center = (float(bounds.ymin) + float(bounds.ymax)) * font_size / 2.0
+        polygons: list[Polygon] = []
+        glyph_distances: list[float] = []
+        for character, advance in zip(core_text, scaled_advances):
+            distance = (cursor + advance / 2.0) % perimeter
+            cursor += advance + tracking
+            if character.isspace():
+                continue
+            location = centerline.interpolate(distance)
+            before = centerline.interpolate((distance - tangent_delta) % perimeter)
+            after = centerline.interpolate((distance + tangent_delta) % perimeter)
+            tangent_x = after.x - before.x
+            tangent_y = after.y - before.y
+            if math.hypot(tangent_x, tangent_y) <= 1e-12:
+                return None
+            glyph = _glyph_geometry(
+                TextPath(
+                    (-advance / 2.0, -vertical_center),
+                    character,
+                    size=font_size,
+                    prop=properties,
+                )
+            )
+            glyph = affinity.rotate(
+                glyph,
+                math.degrees(math.atan2(tangent_y, tangent_x)),
+                origin=(0.0, 0.0),
+            )
+            glyph = affinity.translate(glyph, xoff=location.x, yoff=location.y)
+            glyph_parts = list(_polygon_parts(glyph))
+            if not glyph_parts or any(
+                not containment_area.covers(part) for part in glyph_parts
+            ):
+                return None
+            polygons.extend(glyph_parts)
+            glyph_distances.append(distance)
+        if not polygons:
+            return None
+        return _PerimeterTextLayout(
+            tuple(polygons),
+            font_size,
+            seam_gap,
+            seam_distance,
+            (
+                float(centerline.interpolate(seam_distance).x),
+                float(centerline.interpolate(seam_distance).y),
+            ),
+            perimeter,
+            tuple(glyph_distances),
+        )
+
+    placed: _PerimeterTextLayout | None = None
+    lower = 0.0
+    upper = maximum_size
+    for _ in range(40):
+        candidate_size = (lower + upper) / 2.0
+        candidate = place(candidate_size)
+        if candidate is None:
+            upper = candidate_size
+        else:
+            lower = candidate_size
+            placed = candidate
+    if placed is None or lower < 0.05:
+        raise Gpx2StlError(
+            f"The {description} cannot fit the requested text and bottom seam; "
+            "reduce --text-margin or --text-end-gap, shorten the text, increase "
+            f"the frame width ({fit_guidance}), or use a narrower font."
+        )
+    return placed
+
+
+def _extrude_text(
+    polygons: Iterable[Polygon],
+    *,
+    height: float,
+    bottom: float,
+    description: str,
+) -> trimesh.Trimesh:
+    components: list[trimesh.Trimesh] = []
+    for polygon in polygons:
+        try:
+            mesh = trimesh.creation.extrude_polygon(polygon, height=height)
+        except Exception as exc:
+            raise Gpx2StlError(f"Unable to create {description}: {exc}") from exc
+        mesh.apply_translation((0.0, 0.0, bottom))
+        components.append(mesh)
+    if not components:
+        raise Gpx2StlError("The requested text has no printable glyph outlines.")
+    text_mesh = trimesh.util.concatenate(components)
+    text_mesh.remove_unreferenced_vertices()
+    return text_mesh
+
+
+def _generated_text_layout(config: Config, inner_radius: float) -> _PerimeterTextLayout:
+    outer_polygon = shapely.orient_polygons(
+        Polygon(_model_outline(config.shape, config.max_size))
+    )
+    inner_polygon = Point(0.0, 0.0).buffer(inner_radius, quad_segs=64)
+    frame = outer_polygon.difference(inner_polygon)
     outer_apothem = (
-        outer_radius * math.sqrt(3.0) / 2.0
+        config.max_size * math.sqrt(3.0) / 4.0
         if config.shape == "hex"
-        else outer_radius
+        else config.max_size / 2.0
     )
     frame_width = outer_apothem - inner_radius
     margin = (
@@ -517,87 +722,47 @@ def _text_mesh(config: Config, inner_radius: float) -> trimesh.Trimesh:
         else max(0.5, frame_width * 0.1)
     )
     available_height = frame_width - 2.0 * margin
-    if available_height <= 0:
-        raise Gpx2StlError(
-            "The text frame is too narrow; reduce --inner-size-percent or "
-            "--text-margin."
-        )
-
-    text_to_path = TextToPath()
-    advances = np.asarray(
-        [
-            text_to_path.get_text_width_height_descent(
-                character, properties, ismath=False
-            )[0]
-            for character in config.text
-        ],
-        dtype=np.float64,
+    text_area = (
+        frame.buffer(-margin, join_style="mitre")
+        if margin > 0.0
+        else frame
     )
-    total_advance = float(np.sum(advances))
-    unit_path = TextPath((0.0, 0.0), config.text, size=1.0, prop=properties)
-    bounds = unit_path.get_extents()
-    unit_height = float(bounds.height)
-    if total_advance <= 0 or unit_height <= 0:
-        raise Gpx2StlError("The requested text has no printable glyph outlines.")
-
-    arc_radius = inner_radius + frame_width / 2.0
-    maximum_arc = math.radians(140.0)
-    font_size = min(
-        available_height / unit_height,
-        arc_radius * maximum_arc / total_advance,
-    ) * 0.9
-    if not math.isfinite(font_size) or font_size <= 0:
-        raise Gpx2StlError("Unable to fit text in the available frame.")
-
-    scaled_advances = advances * font_size
-    cursor = -float(np.sum(scaled_advances)) / 2.0
-    vertical_center = (float(bounds.ymin) + float(bounds.ymax)) * font_size / 2.0
-    components: list[trimesh.Trimesh] = []
-    for character, advance in zip(config.text, scaled_advances):
-        midpoint = cursor + advance / 2.0
-        cursor += advance
-        if character.isspace():
-            continue
-        glyph_path = TextPath(
-            (-advance / 2.0, -vertical_center),
-            character,
-            size=font_size,
-            prop=properties,
+    if text_area.is_empty:
+        raise Gpx2StlError(
+            "The text frame cannot fit the requested --text-margin; reduce "
+            "--inner-size-percent or --text-margin."
         )
-        glyph = _glyph_geometry(glyph_path)
-        angle = math.pi / 2.0 - midpoint / arc_radius
-        rotation = angle - math.pi / 2.0
-        for polygon in _polygon_parts(glyph):
-            try:
-                mesh = trimesh.creation.extrude_polygon(
-                    polygon,
-                    height=config.text_height + 0.05,
-                )
-            except Exception as exc:
-                raise Gpx2StlError(
-                    f"Unable to create text geometry for {character!r}: {exc}"
-                ) from exc
-            transform = trimesh.transformations.rotation_matrix(
-                rotation, [0.0, 0.0, 1.0]
-            )
-            transform[:2, 3] = [
-                arc_radius * math.cos(angle),
-                arc_radius * math.sin(angle),
-            ]
-            transform[2, 3] = config.base_height - 0.05
-            mesh.apply_transform(transform)
-            components.append(mesh)
-    if not components:
-        raise Gpx2StlError("The requested text has no printable glyph outlines.")
-    text_mesh = trimesh.util.concatenate(components)
-    text_mesh.remove_unreferenced_vertices()
-    return text_mesh
+    centerline_geometry = outer_polygon.buffer(
+        -frame_width / 2.0,
+        join_style="mitre",
+    )
+    if not isinstance(centerline_geometry, Polygon) or centerline_geometry.is_empty:
+        raise Gpx2StlError("The generated frame cannot form one continuous text path.")
+    return _perimeter_text_layout(
+        config,
+        text_area=text_area,
+        centerline_polygon=centerline_geometry,
+        outer_polygon=outer_polygon,
+        available_height=available_height,
+        description="generated text frame",
+        fit_guidance="reduce --inner-size-percent",
+    )
 
 
-def _custom_text_polygons(
+def _text_mesh(config: Config, inner_radius: float) -> trimesh.Trimesh:
+    layout = _generated_text_layout(config, inner_radius)
+    return _extrude_text(
+        layout.polygons,
+        height=config.text_height + 0.05,
+        bottom=config.base_height - 0.05,
+        description="text geometry",
+    )
+
+
+def _custom_text_layout(
     config: Config,
     custom_base: CustomBase,
-) -> list[Polygon]:
+) -> _PerimeterTextLayout:
     assert config.text is not None
     border = custom_base.top_polygon.difference(custom_base.terrain_polygon)
     margin = config.text_margin or 0.0
@@ -629,159 +794,37 @@ def _custom_text_polygons(
         raise Gpx2StlError(
             "The custom base margin cannot form one continuous text path."
         )
-    centerline = LineString(centerline_parts[0].exterior.coords)
-    perimeter = centerline.length
-    if perimeter <= 1e-6:
-        raise Gpx2StlError("The custom base margin is too small for text.")
-
-    properties, font_path = _font_properties(config)
-    try:
-        font = FT2Font(font_path)
-    except Exception as exc:
-        raise Gpx2StlError(f"Unable to load font '{font_path}': {exc}") from exc
-    missing = sorted(
-        {
-            character
-            for character in config.text
-            if not character.isspace() and font.get_char_index(ord(character)) == 0
-        }
-    )
-    if missing:
-        rendered = ", ".join(repr(character) for character in missing)
-        raise Gpx2StlError(f"Font '{font_path}' does not contain glyphs for: {rendered}")
-
-    text_to_path = TextToPath()
-    advances = np.asarray(
-        [
-            text_to_path.get_text_width_height_descent(
-                character,
-                properties,
-                ismath=False,
-            )[0]
-            for character in config.text
-        ],
-        dtype=np.float64,
-    )
-    total_advance = float(np.sum(advances))
-    unit_path = TextPath((0.0, 0.0), config.text, size=1.0, prop=properties)
-    bounds = unit_path.get_extents()
-    unit_height = float(bounds.height)
-    if total_advance <= 0 or unit_height <= 0:
-        raise Gpx2StlError("The requested text has no printable glyph outlines.")
     available_width = custom_base.inset_distance - 2.0 * margin
     if available_width <= 0.0:
         raise Gpx2StlError(
             "The custom base margin cannot fit the requested --text-margin; "
             "increase --boundary-percent or reduce --text-margin."
         )
-    maximum_size = min(
-        available_width * 0.98 / unit_height,
-        perimeter * 0.98 / total_advance,
+    return _perimeter_text_layout(
+        config,
+        text_area=text_area,
+        centerline_polygon=centerline_parts[0],
+        outer_polygon=custom_base.top_polygon,
+        available_height=available_width,
+        description="custom base margin",
+        fit_guidance="increase --boundary-percent",
     )
 
-    top_center = Point(
-        custom_base.top_polygon.centroid.x,
-        custom_base.top_polygon.bounds[3],
-    )
-    start_distance = centerline.project(top_center)
-    slot_length = perimeter / len(config.text)
-    phase_offsets = [0.0]
-    for step in range(1, 9):
-        offset = slot_length * step / 16.0
-        phase_offsets.extend((offset, -offset))
-    tangent_delta = max(
-        1e-5, min(custom_base.inset_distance / 20.0, perimeter / 10000.0)
-    )
-    containment_border = text_area.buffer(1e-7)
 
-    def layout(font_size: float, phase: float) -> list[Polygon] | None:
-        scaled_advances = advances * font_size
-        tracking = (perimeter - float(np.sum(scaled_advances))) / len(config.text)
-        if tracking < 0:
-            return None
-        cursor = -scaled_advances[0] / 2.0
-        vertical_center = (float(bounds.ymin) + float(bounds.ymax)) * font_size / 2.0
-        candidates: list[Polygon] = []
-        for character, advance in zip(config.text, scaled_advances):
-            midpoint = cursor + advance / 2.0
-            cursor += advance + tracking
-            if character.isspace():
-                continue
-            distance = (start_distance + phase + midpoint) % perimeter
-            location = centerline.interpolate(distance)
-            before = centerline.interpolate((distance - tangent_delta) % perimeter)
-            after = centerline.interpolate((distance + tangent_delta) % perimeter)
-            tangent_x = after.x - before.x
-            tangent_y = after.y - before.y
-            if math.hypot(tangent_x, tangent_y) <= 1e-12:
-                return None
-            glyph = _glyph_geometry(
-                TextPath(
-                    (-advance / 2.0, -vertical_center),
-                    character,
-                    size=font_size,
-                    prop=properties,
-                )
-            )
-            rotation = math.degrees(math.atan2(tangent_y, tangent_x))
-            glyph = affinity.rotate(glyph, rotation, origin=(0.0, 0.0))
-            glyph = affinity.translate(
-                glyph,
-                xoff=location.x,
-                yoff=location.y,
-            )
-            glyph_parts = list(_polygon_parts(glyph))
-            if not glyph_parts or any(
-                not containment_border.covers(part) for part in glyph_parts
-            ):
-                return None
-            candidates.extend(glyph_parts)
-        return candidates or None
-
-    placed: list[Polygon] | None = None
-    lower = 0.0
-    upper = maximum_size
-    for _ in range(40):
-        candidate_size = (lower + upper) / 2.0
-        candidate_layout = None
-        for phase in phase_offsets:
-            candidate_layout = layout(candidate_size, phase)
-            if candidate_layout is not None:
-                break
-        if candidate_layout is not None:
-            lower = candidate_size
-            placed = candidate_layout
-        else:
-            upper = candidate_size
-    if placed is None or lower < 0.05:
-        raise Gpx2StlError(
-            "The custom base margin cannot fit the requested text; increase "
-            "--boundary-percent, reduce --text-margin, shorten the text, or "
-            "use a narrower font."
-        )
-    return placed
+def _custom_text_polygons(
+    config: Config,
+    custom_base: CustomBase,
+) -> list[Polygon]:
+    return list(_custom_text_layout(config, custom_base).polygons)
 
 
 def _custom_text_mesh(config: Config, custom_base: CustomBase) -> trimesh.Trimesh:
-    placed = _custom_text_polygons(config, custom_base)
-    components: list[trimesh.Trimesh] = []
-    for polygon in placed:
-        try:
-            mesh = trimesh.creation.extrude_polygon(
-                polygon,
-                height=config.text_height + custom_base.overlap_depth,
-            )
-        except Exception as exc:
-            raise Gpx2StlError(f"Unable to create custom-base text: {exc}") from exc
-        mesh.apply_translation(
-            (0.0, 0.0, custom_base.top_z - custom_base.overlap_depth)
-        )
-        components.append(mesh)
-    if not components:
-        raise Gpx2StlError("The requested text has no printable glyph outlines.")
-    text_mesh = trimesh.util.concatenate(components)
-    text_mesh.remove_unreferenced_vertices()
-    return text_mesh
+    return _extrude_text(
+        _custom_text_polygons(config, custom_base),
+        height=config.text_height + custom_base.overlap_depth,
+        bottom=custom_base.top_z - custom_base.overlap_depth,
+        description="custom-base text",
+    )
 
 
 def _add_side_faces(

@@ -25,6 +25,7 @@ SETTING_KEYS = {
     "text",
     "text_height",
     "text_margin",
+    "text_end_gap",
     "inner_size_percent",
     "font_file",
     "base_stl",
@@ -156,6 +157,12 @@ def create_parser(settings: dict[str, Any] | None = None) -> argparse.ArgumentPa
         help="minimum text clearance from frame boundaries in mm (default: automatic)",
     )
     parser.add_argument(
+        "--text-end-gap",
+        type=_nonnegative,
+        default=0.0,
+        help="extra bottom seam gap between text ends in mm (default: 0)",
+    )
+    parser.add_argument(
         "--inner-size-percent",
         type=_percentage_below_100,
         default=70.0,
@@ -243,9 +250,9 @@ def config_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser) 
     topo_dir = Path(args.topo_dir or "asset").resolve()
     font_file = Path(args.font_file).resolve() if args.font_file else None
     base_stl = Path(args.base_stl).resolve() if args.base_stl else None
-    text = args.text.strip() if args.text is not None else None
+    text = args.text
     if args.text is not None:
-        if not text:
+        if not text.strip():
             parser.error("--text must contain at least one non-whitespace character")
         if any(not character.isprintable() for character in text):
             parser.error("--text must contain only printable characters")
@@ -307,6 +314,7 @@ def config_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser) 
         text=text,
         text_height=args.text_height,
         text_margin=args.text_margin,
+        text_end_gap=args.text_end_gap,
         inner_size_percent=args.inner_size_percent,
         font_file=font_file,
         base_stl=base_stl,
@@ -368,6 +376,14 @@ def _validate_setting_types(
             parser.error("settings.json value 'text_margin' must be a number or null")
         if not math.isfinite(args.text_margin) or args.text_margin < 0:
             parser.error("--text-margin must be a finite number greater than or equal to zero")
+    if isinstance(args.text_end_gap, bool) or not isinstance(
+        args.text_end_gap, (int, float)
+    ):
+        parser.error("settings.json value 'text_end_gap' must be a number")
+    if not math.isfinite(args.text_end_gap) or args.text_end_gap < 0:
+        parser.error(
+            "--text-end-gap must be a finite number greater than or equal to zero"
+        )
     if args.inner_size_percent <= 0 or args.inner_size_percent >= 100:
         parser.error("--inner-size-percent must be greater than zero and below 100")
     if args.terrain_height is not None:
