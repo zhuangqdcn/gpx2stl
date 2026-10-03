@@ -10,6 +10,7 @@
   "text_height": 1.0,
   "inner_size_percent": 70.0,
   "font_file": null,
+  "base_stl": null,
   "use_3mf": true,
   "max_size": 200.0,
   "terrain_height": null,

@@ -5,7 +5,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 import rasterio
+import trimesh
 from rasterio.transform import from_bounds
+from shapely.geometry import Polygon
 
 import gpx2stl.pipeline
 from gpx2stl.dem import DemSource, GeographicBounds
@@ -106,6 +108,31 @@ def test_text_conversion_uses_circular_inset_and_three_materials(
     )
     assert any(message.startswith("Generated text mesh") for message in messages)
     assert "Writing 3-material 3MF package" in messages
+
+
+def test_conversion_preserves_custom_stl_dimensions(
+    simple_gpx: Path, tmp_path: Path
+) -> None:
+    base = tmp_path / "base.stl"
+    trimesh.creation.extrude_polygon(
+        Polygon([(-30, -20), (30, -20), (30, 20), (-30, 20)]),
+        5.0,
+    ).export(base, file_type="stl")
+    output = tmp_path / "custom.3mf"
+    messages: list[str] = []
+    convert(
+        Config(
+            gpx_file=simple_gpx,
+            output=output,
+            topo=False,
+            base_stl=base,
+            max_size=999.0,
+        ),
+        progress=messages.append,
+    )
+    assert output.is_file()
+    assert "Using custom 60.0 x 40.0 mm base with top Z 5.0 mm" in messages
+    assert any(message.startswith("Fitted route at ") for message in messages)
 
 
 def test_auto_prefers_local_without_api_key(

@@ -30,6 +30,7 @@ def test_cli_defaults(simple_gpx: Path, monkeypatch: pytest.MonkeyPatch) -> None
     assert config.text_height == 1.0
     assert config.inner_size_percent == 70.0
     assert config.font_file is None
+    assert config.base_stl is None
     assert config.max_size == 200.0
     assert config.terrain_height is None
     assert config.base_height == 2.0
@@ -147,6 +148,7 @@ def test_every_cli_parameter_overrides_settings_defaults() -> None:
         "text_height": 1.0,
         "inner_size_percent": 70.0,
         "font_file": "settings.ttf",
+        "base_stl": "settings.stl",
         "use_3mf": True,
         "max_size": 200.0,
         "terrain_height": 20.0,
@@ -180,6 +182,8 @@ def test_every_cli_parameter_overrides_settings_defaults() -> None:
             "65",
             "--font-file",
             "cli.otf",
+            "--base-stl",
+            "cli.stl",
             "--no-3mf",
             "--max-size",
             "180",
@@ -212,6 +216,7 @@ def test_every_cli_parameter_overrides_settings_defaults() -> None:
     assert args.text_height == 1.5
     assert args.inner_size_percent == 65.0
     assert args.font_file == Path("cli.otf")
+    assert args.base_stl == Path("cli.stl")
     assert args.use_3mf is False
     assert args.max_size == 180.0
     assert args.terrain_height == 30.0
@@ -270,7 +275,7 @@ def test_settings_paths_are_relative_to_settings_file(tmp_path: Path) -> None:
     settings = tmp_path / "settings.json"
     settings.write_text(
         '{"gpx_file": "routes/example.gpx", "topo_dir": "asset", '
-        '"font_file": "fonts/custom.ttf"}',
+        '"font_file": "fonts/custom.ttf", "base_stl": "bases/custom.stl"}',
         encoding="utf-8",
     )
     values = load_settings(settings)
@@ -279,6 +284,22 @@ def test_settings_paths_are_relative_to_settings_file(tmp_path: Path) -> None:
     assert values["font_file"] == str(
         (tmp_path / "fonts" / "custom.ttf").resolve()
     )
+    assert values["base_stl"] == str(
+        (tmp_path / "bases" / "custom.stl").resolve()
+    )
+
+
+def test_base_stl_is_validated(simple_gpx: Path, tmp_path: Path) -> None:
+    parser = create_parser()
+    wrong_extension = tmp_path / "base.obj"
+    wrong_extension.touch()
+    with pytest.raises(SystemExit):
+        config_from_args(
+            parser.parse_args(
+                [str(simple_gpx), "--no-topo", "--base-stl", str(wrong_extension)]
+            ),
+            parser,
+        )
 
 
 @pytest.mark.parametrize("value", ["0", "100"])

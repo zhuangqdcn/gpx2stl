@@ -10,14 +10,17 @@ import numpy as np
 import shapely
 import trimesh
 from matplotlib import font_manager
+from matplotlib import tri as matplotlib_tri
 from matplotlib.font_manager import FontProperties
 from matplotlib.ft2font import FT2Font
 from matplotlib.textpath import TextPath, TextToPath
 from numpy.typing import NDArray
 from scipy.interpolate import LinearNDInterpolator, NearestNDInterpolator
 from scipy.spatial import Delaunay
+from shapely import affinity
 from shapely.geometry import LineString, MultiPolygon, Point, Polygon
 
+from gpx2stl.custom_base import CustomBase
 from gpx2stl.dem import DemSource, fill_missing
 from gpx2stl.errors import Gpx2StlError
 from gpx2stl.models import Config, Footprint, ModelTransform, ProjectedRoute
@@ -56,6 +59,33 @@ def _surface_sampler(
 
     def sample(query: NDArray[np.float64]) -> NDArray[np.float64]:
         result = np.asarray(linear(query), dtype=np.float64)
+        missing = ~np.isfinite(result)
+        if np.any(missing):
+            result[missing] = np.asarray(nearest(query[missing]), dtype=np.float64)
+        return result
+
+    return sample
+
+
+def _triangulated_surface_sampler(
+    points: NDArray[np.float64],
+    heights: NDArray[np.float64],
+    faces: list[tuple[int, int, int]],
+) -> HeightFunction:
+    triangulation = matplotlib_tri.Triangulation(
+        points[:, 0],
+        points[:, 1],
+        triangles=np.asarray(faces, dtype=np.int64),
+    )
+    linear = matplotlib_tri.LinearTriInterpolator(triangulation, heights)
+    nearest = NearestNDInterpolator(points, heights)
+
+    def sample(query: NDArray[np.float64]) -> NDArray[np.float64]:
+        interpolated = linear(query[:, 0], query[:, 1])
+        result = np.asarray(
+            np.ma.filled(interpolated, np.nan),
+            dtype=np.float64,
+        )
         missing = ~np.isfinite(result)
         if np.any(missing):
             result[missing] = np.asarray(nearest(query[missing]), dtype=np.float64)
@@ -171,6 +201,111 @@ def _polygon_terrain(
     _add_side_faces(faces, perimeter_indices, count)
     mesh = trimesh.Trimesh(vertices=vertices, faces=np.asarray(faces), process=True)
     return mesh, _surface_sampler(points, top)
+
+
+def _triangulated_polygon_points(
+    polygon: Polygon,
+    spacing: float,
+) -> tuple[NDArray[np.float64], list[tuple[int, int, int]], list[list[int]]]:
+    polygon = shapely.orient_polygons(polygon)
+    minimum_x, minimum_y, maximum_x, maximum_y = polygon.bounds
+    x_axis = np.arange(minimum_x, maximum_x + spacing * 0.5, spacing)
+    y_axis = np.arange(minimum_y, maximum_y + spacing * 0.5, spacing)
+    xx, yy = np.meshgrid(x_axis, y_axis)
+    grid = np.column_stack((xx.ravel(), yy.ravel()))
+    index_by_coordinate: dict[tuple[float, float], int] = {}
+    points: list[tuple[float, float]] = []
+    faces: list[tuple[int, int, int]] = []
+
+    def index_for(point: NDArray[np.float64] | tuple[float, float]) -> int:
+        key = (round(float(point[0]), 10), round(float(point[1]), 10))
+        if key not in index_by_coordinate:
+            index_by_coordinate[key] = len(points)
+            points.append(key)
+        return index_by_coordinate[key]
+
+    base_triangles = shapely.constrained_delaunay_triangles(polygon)
+    for base_triangle in shapely.get_parts(base_triangles):
+        inside = shapely.contains_xy(base_triangle, grid[:, 0], grid[:, 1])
+        local = np.vstack(
+            (
+                np.asarray(base_triangle.exterior.coords[:3], dtype=np.float64),
+                grid[inside],
+            )
+        )
+        local = np.unique(local, axis=0)
+        simplices = (
+            np.array([[0, 1, 2]], dtype=np.int64)
+            if len(local) == 3
+            else Delaunay(local).simplices
+        )
+        for simplex in simplices:
+            triangle = local[simplex]
+            ab = triangle[1] - triangle[0]
+            ac = triangle[2] - triangle[0]
+            cross = ab[0] * ac[1] - ab[1] * ac[0]
+            if abs(float(cross)) <= 1e-14:
+                continue
+            indices = [index_for(point) for point in triangle]
+            if cross < 0:
+                indices[1], indices[2] = indices[2], indices[1]
+            faces.append(tuple(indices))
+
+    rings = [polygon.exterior, *polygon.interiors]
+    ring_indices = [
+        [index_for((x, y)) for x, y in list(ring.coords)[:-1]]
+        for ring in rings
+    ]
+    return np.asarray(points, dtype=np.float64), faces, ring_indices
+
+
+def _custom_terrain(
+    custom_base: CustomBase,
+    raw_height: Callable[[NDArray[np.float64]], NDArray[np.float64]] | None,
+    config: Config,
+) -> tuple[trimesh.Trimesh, HeightFunction]:
+    minimum_x, minimum_y, maximum_x, maximum_y = custom_base.terrain_polygon.bounds
+    maximum_span = max(maximum_x - minimum_x, maximum_y - minimum_y)
+    resolution = _model_resolution(maximum_span)
+    spacing = maximum_span / (resolution - 1)
+    points, top_faces, rings = _triangulated_polygon_points(
+        custom_base.terrain_polygon,
+        spacing,
+    )
+    if raw_height is None:
+        top = np.full(len(points), custom_base.top_z, dtype=np.float64)
+    else:
+        raw = np.asarray(raw_height(points), dtype=np.float64)
+        missing = ~np.isfinite(raw)
+        if np.all(missing):
+            raise Gpx2StlError("The selected DEM contains no usable elevation samples.")
+        if np.any(missing):
+            nearest = NearestNDInterpolator(points[~missing], raw[~missing])
+            raw[missing] = nearest(points[missing])
+        top = custom_base.top_z + _terrain_relief_height(
+            raw,
+            custom_base.transform,
+            config.terrain_height,
+        )
+    bottom = custom_base.top_z - custom_base.overlap_depth
+    count = len(points)
+    vertices = np.vstack(
+        (
+            np.column_stack((points, top)),
+            np.column_stack((points, np.full(count, bottom))),
+        )
+    )
+    faces: list[tuple[int, int, int]] = []
+    for a, b, c in top_faces:
+        faces.extend(((a, b, c), (count + a, count + c, count + b)))
+    for ring in rings:
+        _add_side_faces(faces, ring, count)
+    patch = trimesh.Trimesh(vertices=vertices, faces=np.asarray(faces), process=True)
+    terrain = _union_meshes(
+        [custom_base.mesh.copy(), patch],
+        "the custom STL base and terrain",
+    )
+    return terrain, _triangulated_surface_sampler(points, top, top_faces)
 
 
 def _structured_square(
@@ -435,6 +570,124 @@ def _text_mesh(config: Config, inner_radius: float) -> trimesh.Trimesh:
     return text_mesh
 
 
+def _custom_text_mesh(config: Config, custom_base: CustomBase) -> trimesh.Trimesh:
+    assert config.text is not None
+    border = custom_base.top_polygon.difference(custom_base.terrain_polygon)
+    properties, font_path = _font_properties(config)
+    try:
+        font = FT2Font(font_path)
+    except Exception as exc:
+        raise Gpx2StlError(f"Unable to load font '{font_path}': {exc}") from exc
+    missing = sorted(
+        {
+            character
+            for character in config.text
+            if not character.isspace() and font.get_char_index(ord(character)) == 0
+        }
+    )
+    if missing:
+        rendered = ", ".join(repr(character) for character in missing)
+        raise Gpx2StlError(f"Font '{font_path}' does not contain glyphs for: {rendered}")
+
+    center = custom_base.terrain_polygon.centroid
+    inner_top = custom_base.terrain_polygon.bounds[3]
+    outer_top = custom_base.top_polygon.bounds[3]
+    frame_width = outer_top - inner_top
+    if frame_width <= 1e-6:
+        raise Gpx2StlError(
+            "The custom base has no flat top border for text; increase "
+            "--boundary-percent."
+        )
+    text_to_path = TextToPath()
+    advances = np.asarray(
+        [
+            text_to_path.get_text_width_height_descent(
+                character,
+                properties,
+                ismath=False,
+            )[0]
+            for character in config.text
+        ],
+        dtype=np.float64,
+    )
+    total_advance = float(np.sum(advances))
+    unit_path = TextPath((0.0, 0.0), config.text, size=1.0, prop=properties)
+    bounds = unit_path.get_extents()
+    unit_height = float(bounds.height)
+    if total_advance <= 0 or unit_height <= 0:
+        raise Gpx2StlError("The requested text has no printable glyph outlines.")
+    arc_radius = inner_top - center.y + frame_width / 2.0
+    initial_size = min(
+        frame_width * 0.8 / unit_height,
+        arc_radius * math.radians(140.0) / total_advance,
+    )
+
+    placed: list[Polygon] | None = None
+    font_size = initial_size
+    for _ in range(64):
+        scaled_advances = advances * font_size
+        cursor = -float(np.sum(scaled_advances)) / 2.0
+        vertical_center = (
+            float(bounds.ymin) + float(bounds.ymax)
+        ) * font_size / 2.0
+        candidates: list[Polygon] = []
+        fits = True
+        for character, advance in zip(config.text, scaled_advances):
+            midpoint = cursor + advance / 2.0
+            cursor += advance
+            if character.isspace():
+                continue
+            glyph = _glyph_geometry(
+                TextPath(
+                    (-advance / 2.0, -vertical_center),
+                    character,
+                    size=font_size,
+                    prop=properties,
+                )
+            )
+            angle = math.pi / 2.0 - midpoint / arc_radius
+            rotation = math.degrees(angle - math.pi / 2.0)
+            glyph = affinity.rotate(glyph, rotation, origin=(0.0, 0.0))
+            glyph = affinity.translate(
+                glyph,
+                xoff=center.x + arc_radius * math.cos(angle),
+                yoff=center.y + arc_radius * math.sin(angle),
+            )
+            glyph_parts = list(_polygon_parts(glyph))
+            if not glyph_parts or any(not border.covers(part) for part in glyph_parts):
+                fits = False
+                break
+            candidates.extend(glyph_parts)
+        if fits and candidates:
+            placed = candidates
+            break
+        font_size *= 0.9
+        if font_size < 0.05:
+            break
+    if placed is None:
+        raise Gpx2StlError(
+            "The custom base top border cannot fit the requested text; increase "
+            "--boundary-percent, shorten the text, or use a wider font."
+        )
+
+    components: list[trimesh.Trimesh] = []
+    for polygon in placed:
+        try:
+            mesh = trimesh.creation.extrude_polygon(
+                polygon,
+                height=config.text_height + custom_base.overlap_depth,
+            )
+        except Exception as exc:
+            raise Gpx2StlError(f"Unable to create custom-base text: {exc}") from exc
+        mesh.apply_translation(
+            (0.0, 0.0, custom_base.top_z - custom_base.overlap_depth)
+        )
+        components.append(mesh)
+    text_mesh = trimesh.util.concatenate(components)
+    text_mesh.remove_unreferenced_vertices()
+    return text_mesh
+
+
 def _add_side_faces(
     faces: list[tuple[int, int, int]], perimeter: list[int], bottom_offset: int
 ) -> None:
@@ -520,8 +773,12 @@ def _route_mesh(
     transform: ModelTransform,
     surface_height: HeightFunction,
     config: Config,
+    base_height: float | None = None,
+    clamp_bottom_to_zero: bool = True,
+    overlap_depth: float = 0.05,
 ) -> trimesh.Trimesh:
     components: list[trimesh.Trimesh] = []
+    route_base_height = config.base_height if base_height is None else base_height
     model_paths = tuple(transform.to_model(path) for path in route.paths)
     all_elevations = np.concatenate(route.elevations)
     if not config.topo:
@@ -552,14 +809,18 @@ def _route_mesh(
                 line=line,
                 cumulative=cumulative,
                 elevations=elevations,
-                base_height=config.base_height,
+                base_height=route_base_height,
                 elevation_shift=elevation_shift,
             )
 
         def bottom_height(points: NDArray[np.float64]) -> NDArray[np.float64]:
             if config.topo:
-                return np.maximum(0.0, surface_height(points) - 0.05)
-            return np.full(len(points), max(0.0, config.base_height - 0.05))
+                bottom = surface_height(points) - overlap_depth
+                return np.maximum(0.0, bottom) if clamp_bottom_to_zero else bottom
+            bottom = route_base_height - overlap_depth
+            if clamp_bottom_to_zero:
+                bottom = max(0.0, bottom)
+            return np.full(len(points), bottom)
 
         for polygon in _polygon_parts(buffered):
             components.append(_variable_extrusion(polygon, bottom_height, top_height))
@@ -590,9 +851,17 @@ def build_geometry(
     transform: ModelTransform,
     config: Config,
     dem: DemSource | None,
+    custom_base: CustomBase | None = None,
 ) -> Geometry:
     raw_height = None if dem is None else _raw_height_function(dem, route, transform)
-    if config.text is not None:
+    if custom_base is not None:
+        terrain, surface = _custom_terrain(custom_base, raw_height, config)
+        text_mesh = (
+            _custom_text_mesh(config, custom_base)
+            if config.text is not None
+            else None
+        )
+    elif config.text is not None:
         if footprint.shape != "circle":
             raise Gpx2StlError("Text layout requires a circular terrain footprint.")
         inner_terrain, surface = _polar_circle(
@@ -619,7 +888,15 @@ def build_geometry(
     else:
         terrain, surface = _polygon_terrain(footprint, transform, raw_height, config)
         text_mesh = None
-    route_mesh = _route_mesh(route, transform, surface, config)
+    route_mesh = _route_mesh(
+        route,
+        transform,
+        surface,
+        config,
+        custom_base.top_z if custom_base is not None else None,
+        custom_base is None,
+        custom_base.overlap_depth if custom_base is not None else 0.05,
+    )
     meshes = [("terrain/base", terrain), ("route", route_mesh)]
     if text_mesh is not None:
         meshes.append(("text", text_mesh))

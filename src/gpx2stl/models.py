@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -25,6 +25,7 @@ class Config:
     text_height: float = 1.0
     inner_size_percent: float = 70.0
     font_file: Path | None = None
+    base_stl: Path | None = None
     use_3mf: bool = True
     max_size: float = 200.0
     terrain_height: float | None = None
@@ -79,9 +80,12 @@ class Footprint:
 class ModelTransform:
     footprint: Footprint
     scale: float
+    model_center: NDArray[np.float64] = field(
+        default_factory=lambda: np.zeros(2, dtype=np.float64)
+    )
 
     def to_model(self, points: NDArray[np.float64]) -> NDArray[np.float64]:
-        return (points - self.footprint.center) * self.scale
+        return (points - self.footprint.center) * self.scale + self.model_center
 
     def to_projected(self, points: NDArray[np.float64]) -> NDArray[np.float64]:
-        return points / self.scale + self.footprint.center
+        return (points - self.model_center) / self.scale + self.footprint.center

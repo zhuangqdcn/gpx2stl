@@ -218,6 +218,13 @@ def _footprint_perimeter(footprint: Footprint, samples: int = 180) -> NDArray[np
 
 def request_bounds(footprint: Footprint, route: ProjectedRoute) -> tuple[GeographicBounds, ...]:
     perimeter = _footprint_perimeter(footprint)
+    return request_projected_bounds(perimeter, route)
+
+
+def request_projected_bounds(
+    perimeter: NDArray[np.float64],
+    route: ProjectedRoute,
+) -> tuple[GeographicBounds, ...]:
     longitude, latitude = route.inverse.transform(perimeter[:, 0], perimeter[:, 1])
     longitude = np.asarray(longitude, dtype=np.float64)
     latitude = np.asarray(latitude, dtype=np.float64)

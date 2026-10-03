@@ -6,6 +6,7 @@ Convert GPX tracks and routes into printable terrain models:
 - **STL on request:** one watertight mesh containing the route and terrain/base.
 - **Flexible topography:** use local GeoTIFF files first or download SRTMGL1/COP30 data from OpenTopography.
 - **Square, circular, or hexagonal base:** automatically sized around every track segment and GPX route in the input file.
+- **Custom STL base:** preserve an existing model and use its highest flat top as the exact terrain shape.
 - **Optional arc text:** place terrain in a centered circular inset and raise text around it on a flat outer frame.
 
 [中文说明](#中文说明)
@@ -94,6 +95,9 @@ python -m gpx2stl route.gpx --shape hex --text "MOUNT RAINIER"
 # Use a custom font for Chinese or another script
 python -m gpx2stl route.gpx --text "路线" --font-file ./fonts/NotoSansCJK-Regular.ttc
 
+# Preserve an existing STL base and use its flat top
+python -m gpx2stl route.gpx --base-stl ./base.stl --boundary-percent 10
+
 # Force one local GeoTIFF (no API key or network)
 python -m gpx2stl route.gpx --topo-source local --topo-file ./terrain.tif
 
@@ -128,6 +132,7 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 | `--text-height` | `1` mm | Raised text thickness above the frame. |
 | `--inner-size-percent` | `70` | Terrain inset diameter as a percentage of the outer model width; must be above 0 and below 100. |
 | `--font-file` | built-in | Custom `.ttf`, `.otf`, or `.ttc` font for scripts not covered by the built-in font. |
+| `--base-stl` | none | Existing millimeter-scale, Z-up STL whose highest flat top becomes the custom terrain shape. |
 | `--3mf`, `--no-3mf` | 3MF | Select multi-material 3MF or single-mesh STL. |
 | `--max-size` | `200` mm | Maximum final X/Y dimension. |
 | `--terrain-height` | automatic | Terrain relief in mm. By default, elevation uses the same real-world-to-model ratio as `--max-size`; an explicit value normalizes relief to that height. |
@@ -151,6 +156,22 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 - Text uses the built-in DejaVu Sans font for Latin letters, digits, and punctuation. Characters are placed tangent to a top-centered arc and automatically reduced to fit. Use `--font-file` for Chinese or other scripts; missing glyphs are reported as errors.
 - In STL output, raised text is unioned with the frame, route, and terrain into one watertight mesh.
 - Routes crossing the ±180° antimeridian are supported by split DEM requests.
+
+### Custom STL bases
+
+`--base-stl` preserves the input mesh’s original position, orientation, and dimensions. STL files have no unit metadata, so the input is assumed to use millimeters and must already be oriented with Z up. Custom-base mode ignores `--shape`, `--base-height`, `--max-size`, and `--inner-size-percent` for base sizing and layout.
+
+The input must be a finite, consistently wound, watertight, positive-volume mesh with exactly one connected horizontal upward-facing region at its global maximum Z. That top region may be concave and may contain holes. Models with only curved/sloped maxima or multiple disconnected highest regions are rejected.
+
+The terrain region follows the exact top outline after an inward offset:
+
+```text
+offset distance = boundary-percent / 100 × min(top width, top height)
+```
+
+The GPX remains north-up, is centered on the usable inset, and receives the largest uniform scale whose complete route-width ribbon fits inside the region without crossing concave edges or holes. The custom STL itself is never resized by `--max-size`. DEM bounds are derived from this fitted custom region.
+
+When `--text` is supplied, text is automatically fitted along a top-centered arc in the remaining flat border. Every glyph must fit entirely on that border. Increase `--boundary-percent`, shorten the text, or choose a narrower font if the border cannot contain it.
 
 ## Topography source behavior
 
@@ -203,6 +224,7 @@ This project is licensed under the [MIT License](LICENSE). Terrain datasets rema
 - **可选输出 STL：**路线与地形/底座合并为一个水密网格。
 - **灵活的真实地形：**优先使用本地 GeoTIFF，或通过 OpenTopography 下载 SRTMGL1/COP30 高程数据。
 - **方形、圆形或六边形底座：**根据输入文件中的全部轨迹段和 GPX 路线自动确定范围。
+- **自定义 STL 底座：**保留现有模型，并将其最高的平坦顶面作为精确地形外形。
 - **可选弧形文字：**将地形放入居中的圆形区域，并在平坦外框上生成环绕文字。
 
 ## 环境要求
@@ -289,6 +311,9 @@ python -m gpx2stl route.gpx --shape hex --text "MOUNT RAINIER"
 # 中文或其他文字使用自定义字体
 python -m gpx2stl route.gpx --text "路线" --font-file ./fonts/NotoSansCJK-Regular.ttc
 
+# 保留现有 STL 底座并使用其平坦顶面
+python -m gpx2stl route.gpx --base-stl ./base.stl --boundary-percent 10
+
 # 强制使用一个本地 GeoTIFF（无需 API Key 或网络）
 python -m gpx2stl route.gpx --topo-source local --topo-file ./terrain.tif
 
@@ -323,6 +348,7 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 | `--text-height` | `1` mm | 文字高出外框的厚度。 |
 | `--inner-size-percent` | `70` | 圆形地形区域直径占模型外宽的百分比；必须大于 0 且小于 100。 |
 | `--font-file` | 内置字体 | 为内置字体未覆盖的文字系统指定自定义 `.ttf`、`.otf` 或 `.ttc` 字体。 |
+| `--base-stl` | 无 | 使用毫米单位、Z 轴朝上的现有 STL；其最高平坦顶面成为自定义地形外形。 |
 | `--3mf`, `--no-3mf` | 3MF | 选择多材料 3MF 或单网格 STL。 |
 | `--max-size` | `200` mm | 最终模型 X/Y 最大尺寸。 |
 | `--terrain-height` | 自动 | 地形高度差（mm）。默认使用与 `--max-size` 相同的真实世界到模型比例；显式设置后会将地形高度差归一化到该值。 |
@@ -346,6 +372,22 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 - 拉丁字母、数字和标点默认使用内置 DejaVu Sans 字体。每个字符沿顶部居中圆弧切向排列，并自动缩小以适应空间。中文或其他文字请使用 `--font-file`；字体缺少字形时会明确报错。
 - 输出 STL 时，凸起文字会与外框、路线和地形合并为一个水密网格。
 - 支持跨越 ±180° 日期变更线的路线；此时会拆分 DEM 请求。
+
+### 自定义 STL 底座
+
+`--base-stl` 会保留输入网格原有的位置、方向和尺寸。STL 文件不包含单位信息，因此程序假定输入使用毫米，并且已按 Z 轴朝上放置。自定义底座模式在确定底座尺寸和布局时忽略 `--shape`、`--base-height`、`--max-size` 和 `--inner-size-percent`。
+
+输入必须是顶点有限、绕序一致、水密且体积为正的网格，并且在全局最高 Z 处必须恰好有一个相连、水平且朝上的顶面区域。该区域可以是凹多边形，也可以包含孔洞。只有曲面/斜面最高点或有多个不相连最高区域的模型会被拒绝。
+
+地形区域使用顶面的精确轮廓，并按以下距离向内缩：
+
+```text
+内缩距离 = boundary-percent / 100 × min(顶面宽度, 顶面高度)
+```
+
+GPX 保持正北朝上，以可用内缩区域为中心，并采用能使完整路线宽度带位于区域内、不穿过凹边或孔洞的最大等比例缩放。自定义 STL 本身绝不会被 `--max-size` 缩放。DEM 请求范围根据拟合后的自定义区域计算。
+
+指定 `--text` 后，文字会自动缩放并沿顶部居中圆弧放置在剩余平坦边框内。每个字形都必须完整位于边框上。如果空间不足，请增大 `--boundary-percent`、缩短文字或选择更窄的字体。
 
 ## 地形数据源规则
 

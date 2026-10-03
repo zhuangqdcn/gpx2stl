@@ -26,6 +26,7 @@ SETTING_KEYS = {
     "text_height",
     "inner_size_percent",
     "font_file",
+    "base_stl",
     "use_3mf",
     "max_size",
     "terrain_height",
@@ -89,7 +90,14 @@ def load_settings(path: Path | None) -> dict[str, Any]:
             f"Unknown setting{'s' if len(unknown) != 1 else ''} in '{path}': "
             f"{', '.join(unknown)}"
         )
-    for name in ("gpx_file", "output", "topo_file", "topo_dir", "font_file"):
+    for name in (
+        "gpx_file",
+        "output",
+        "topo_file",
+        "topo_dir",
+        "font_file",
+        "base_stl",
+    ):
         setting = value.get(name)
         if isinstance(setting, str):
             setting_path = Path(setting)
@@ -152,11 +160,16 @@ def create_parser(settings: dict[str, Any] | None = None) -> argparse.ArgumentPa
         help="custom .ttf, .otf, or .ttc font for text glyphs",
     )
     parser.add_argument(
+        "--base-stl",
+        type=Path,
+        help="preserve an STL base and place terrain on its highest flat top",
+    )
+    parser.add_argument(
         "--3mf",
         dest="use_3mf",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="write two-material 3MF instead of STL (default: enabled)",
+        help="write multi-material 3MF instead of STL (default: enabled)",
     )
     parser.add_argument(
         "--max-size",
@@ -222,6 +235,7 @@ def config_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser) 
     topo_file = Path(args.topo_file).resolve() if args.topo_file else None
     topo_dir = Path(args.topo_dir or "asset").resolve()
     font_file = Path(args.font_file).resolve() if args.font_file else None
+    base_stl = Path(args.base_stl).resolve() if args.base_stl else None
     text = args.text.strip() if args.text is not None else None
     if args.text is not None:
         if not text:
@@ -233,6 +247,11 @@ def config_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser) 
             parser.error(f"font file does not exist or is not a file: {font_file}")
         if font_file.suffix.lower() not in {".ttf", ".otf", ".ttc"}:
             parser.error("--font-file must use the .ttf, .otf, or .ttc extension")
+    if base_stl is not None:
+        if not base_stl.is_file():
+            parser.error(f"base STL does not exist or is not a file: {base_stl}")
+        if base_stl.suffix.lower() != ".stl":
+            parser.error("--base-stl must use the .stl extension")
     if args.topo:
         if args.topo_source == "online":
             if topo_file is not None or args.topo_dir is not None:
@@ -257,18 +276,19 @@ def config_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser) 
             parser.error(
                 f"local topo requires at least one .tif or .tiff file in: {topo_dir}"
             )
-    available_route_width = (
-        args.max_size * args.inner_size_percent / 100.0
-        if text is not None
-        else args.max_size
-    )
-    if text is None and args.shape == "hex":
-        available_route_width *= math.sqrt(3.0) / 2.0
-    if args.route_width >= available_route_width:
-        parser.error(
-            "--route-width must be smaller than the available terrain width "
-            f"({available_route_width:g} mm)"
+    if base_stl is None:
+        available_route_width = (
+            args.max_size * args.inner_size_percent / 100.0
+            if text is not None
+            else args.max_size
         )
+        if text is None and args.shape == "hex":
+            available_route_width *= math.sqrt(3.0) / 2.0
+        if args.route_width >= available_route_width:
+            parser.error(
+                "--route-width must be smaller than the available terrain width "
+                f"({available_route_width:g} mm)"
+            )
     return Config(
         gpx_file=gpx_file,
         output=output,
@@ -281,6 +301,7 @@ def config_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser) 
         text_height=args.text_height,
         inner_size_percent=args.inner_size_percent,
         font_file=font_file,
+        base_stl=base_stl,
         use_3mf=args.use_3mf,
         max_size=args.max_size,
         terrain_height=args.terrain_height,
@@ -297,7 +318,14 @@ def config_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser) 
 def _validate_setting_types(
     args: argparse.Namespace, parser: argparse.ArgumentParser
 ) -> None:
-    for name in ("gpx_file", "output", "topo_file", "topo_dir", "font_file"):
+    for name in (
+        "gpx_file",
+        "output",
+        "topo_file",
+        "topo_dir",
+        "font_file",
+        "base_stl",
+    ):
         value = getattr(args, name)
         if value is not None and not isinstance(value, (str, Path)):
             parser.error(f"settings.json value '{name}' must be a path string or null")

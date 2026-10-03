@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from gpx2stl.custom_base import CustomBase, prepare_custom_base, sample_exterior
 from gpx2stl.dem import (
     DemSource,
     GeographicBounds,
@@ -9,6 +10,7 @@ from gpx2stl.dem import (
     dem_covers_bounds,
     load_local_dem,
     request_bounds,
+    request_projected_bounds,
 )
 from gpx2stl.errors import Gpx2StlError
 from gpx2stl.export import export_geometry
@@ -80,22 +82,45 @@ def convert(
         paths = tuple(interpolate_elevations(path) for path in paths)
     progress("Projecting geographic coordinates into a local metric system")
     route = project_paths(paths)
-    terrain_size = (
-        config.max_size * config.inner_size_percent / 100.0
-        if config.text is not None
-        else config.max_size
-    )
-    footprint_shape = "circle" if config.text is not None else config.shape
-    minimum_footprint = config.route_width / terrain_size
-    footprint = create_footprint(
-        route.points,
-        footprint_shape,
-        config.boundary_percent,
-        minimum_footprint,
-    )
-    footprint = add_route_clearance(footprint, config.route_width, terrain_size)
-    transform = create_model_transform(footprint, terrain_size)
-    if config.text is None:
+    custom_base: CustomBase | None = None
+    if config.base_stl is not None:
+        progress(f"Loading and validating custom base STL from {config.base_stl}")
+        custom_base = prepare_custom_base(
+            config.base_stl,
+            config.boundary_percent,
+            route,
+            config.route_width,
+        )
+        footprint = custom_base.transform.footprint
+        transform = custom_base.transform
+        width = custom_base.mesh.extents[0]
+        height = custom_base.mesh.extents[1]
+        progress(
+            f"Using custom {width:.1f} x {height:.1f} mm base with top Z "
+            f"{custom_base.top_z:.1f} mm"
+        )
+    else:
+        terrain_size = (
+            config.max_size * config.inner_size_percent / 100.0
+            if config.text is not None
+            else config.max_size
+        )
+        footprint_shape = "circle" if config.text is not None else config.shape
+        minimum_footprint = config.route_width / terrain_size
+        footprint = create_footprint(
+            route.points,
+            footprint_shape,
+            config.boundary_percent,
+            minimum_footprint,
+        )
+        footprint = add_route_clearance(footprint, config.route_width, terrain_size)
+        transform = create_model_transform(footprint, terrain_size)
+    if custom_base is not None:
+        progress(
+            f"Fitted route at {transform.scale:.8f} mm per source meter inside "
+            "the inset custom top"
+        )
+    elif config.text is None:
         progress(
             f"Created {config.shape} footprint: {footprint.diameter / 1000:.2f} km "
             f"source span -> {config.max_size:.1f} mm model"
@@ -108,7 +133,12 @@ def convert(
 
     dem = None
     if config.topo:
-        bounds = request_bounds(footprint, route)
+        if custom_base is None:
+            bounds = request_bounds(footprint, route)
+        else:
+            model_perimeter = sample_exterior(custom_base.terrain_polygon)
+            projected_perimeter = transform.to_projected(model_perimeter)
+            bounds = request_projected_bounds(projected_perimeter, route)
         progress(
             "Terrain bounds: "
             + "; ".join(
@@ -119,9 +149,19 @@ def convert(
         )
         dem = resolve_dem(config, bounds, progress)
     else:
-        progress("Topography disabled; generating a flat base")
+        if custom_base is None:
+            progress("Topography disabled; generating a flat base")
+        else:
+            progress("Topography disabled; using the flat custom top")
     progress("Generating watertight terrain/base and route meshes")
-    geometry = build_geometry(route, footprint, transform, config, dem)
+    geometry = build_geometry(
+        route,
+        footprint,
+        transform,
+        config,
+        dem,
+        custom_base,
+    )
     progress(
         f"Generated terrain/base mesh ({len(geometry.terrain.vertices):,} vertices, "
         f"{len(geometry.terrain.faces):,} faces)"
