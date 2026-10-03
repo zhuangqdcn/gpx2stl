@@ -18,6 +18,7 @@ class CustomBase:
     mesh: trimesh.Trimesh
     top_polygon: Polygon
     terrain_polygon: Polygon
+    inset_distance: float
     top_z: float
     transform: ModelTransform
 
@@ -76,7 +77,11 @@ def _extract_top_polygon(mesh: trimesh.Trimesh, path: Path) -> tuple[Polygon, fl
     return shapely.orient_polygons(polygons[0]), top_z
 
 
-def _inset_top(top: Polygon, boundary_percent: float, path: Path) -> Polygon:
+def _inset_top(
+    top: Polygon,
+    boundary_percent: float,
+    path: Path,
+) -> tuple[Polygon, float]:
     minimum_x, minimum_y, maximum_x, maximum_y = top.bounds
     minimum_span = min(maximum_x - minimum_x, maximum_y - minimum_y)
     distance = boundary_percent / 100.0 * minimum_span
@@ -93,7 +98,7 @@ def _inset_top(top: Polygon, boundary_percent: float, path: Path) -> Polygon:
             f"Insetting the top of base STL '{path}' by {boundary_percent:g}% "
             "collapsed or disconnected the terrain region."
         )
-    return shapely.orient_polygons(polygons[0])
+    return shapely.orient_polygons(polygons[0]), distance
 
 
 def _fit_transform(
@@ -155,9 +160,9 @@ def prepare_custom_base(
 ) -> CustomBase:
     mesh = _load_mesh(path)
     top, top_z = _extract_top_polygon(mesh, path)
-    terrain = _inset_top(top, boundary_percent, path)
+    terrain, inset_distance = _inset_top(top, boundary_percent, path)
     transform = _fit_transform(route, terrain, route_width)
-    return CustomBase(mesh, top, terrain, top_z, transform)
+    return CustomBase(mesh, top, terrain, inset_distance, top_z, transform)
 
 
 def sample_exterior(polygon: Polygon, minimum_samples: int = 180) -> np.ndarray:

@@ -4,6 +4,7 @@ import math
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from functools import partial
+from itertools import pairwise
 from pathlib import Path
 
 import numpy as np
@@ -224,12 +225,27 @@ def _triangulated_polygon_points(
             points.append(key)
         return index_by_coordinate[key]
 
+    def subdivide(
+        start: NDArray[np.float64],
+        end: NDArray[np.float64],
+    ) -> NDArray[np.float64]:
+        count = max(1, math.ceil(float(np.linalg.norm(end - start)) / spacing))
+        fractions = np.arange(count, dtype=np.float64) / count
+        return start + fractions[:, np.newaxis] * (end - start)
+
     base_triangles = shapely.constrained_delaunay_triangles(polygon)
     for base_triangle in shapely.get_parts(base_triangles):
         inside = shapely.contains_xy(base_triangle, grid[:, 0], grid[:, 1])
+        corners = np.asarray(base_triangle.exterior.coords[:3], dtype=np.float64)
+        edge_points = np.vstack(
+            [
+                subdivide(start, end)
+                for start, end in zip(corners, np.roll(corners, -1, axis=0))
+            ]
+        )
         local = np.vstack(
             (
-                np.asarray(base_triangle.exterior.coords[:3], dtype=np.float64),
+                edge_points,
                 grid[inside],
             )
         )
@@ -244,7 +260,7 @@ def _triangulated_polygon_points(
             ab = triangle[1] - triangle[0]
             ac = triangle[2] - triangle[0]
             cross = ab[0] * ac[1] - ab[1] * ac[0]
-            if abs(float(cross)) <= 1e-14:
+            if abs(float(cross)) <= spacing * spacing * 1e-8:
                 continue
             indices = [index_for(point) for point in triangle]
             if cross < 0:
@@ -252,10 +268,13 @@ def _triangulated_polygon_points(
             faces.append(tuple(indices))
 
     rings = [polygon.exterior, *polygon.interiors]
-    ring_indices = [
-        [index_for((x, y)) for x, y in list(ring.coords)[:-1]]
-        for ring in rings
-    ]
+    ring_indices = []
+    for ring in rings:
+        coordinates = np.asarray(ring.coords, dtype=np.float64)
+        ring_points = np.vstack(
+            [subdivide(start, end) for start, end in pairwise(coordinates)]
+        )
+        ring_indices.append([index_for(point) for point in ring_points])
     return np.asarray(points, dtype=np.float64), faces, ring_indices
 
 
@@ -492,11 +511,16 @@ def _text_mesh(config: Config, inner_radius: float) -> trimesh.Trimesh:
         else outer_radius
     )
     frame_width = outer_apothem - inner_radius
-    margin = max(0.5, frame_width * 0.1)
+    margin = (
+        config.text_margin
+        if config.text_margin is not None
+        else max(0.5, frame_width * 0.1)
+    )
     available_height = frame_width - 2.0 * margin
     if available_height <= 0:
         raise Gpx2StlError(
-            "The text frame is too narrow; reduce --inner-size-percent."
+            "The text frame is too narrow; reduce --inner-size-percent or "
+            "--text-margin."
         )
 
     text_to_path = TextToPath()
@@ -570,9 +594,46 @@ def _text_mesh(config: Config, inner_radius: float) -> trimesh.Trimesh:
     return text_mesh
 
 
-def _custom_text_mesh(config: Config, custom_base: CustomBase) -> trimesh.Trimesh:
+def _custom_text_polygons(
+    config: Config,
+    custom_base: CustomBase,
+) -> list[Polygon]:
     assert config.text is not None
     border = custom_base.top_polygon.difference(custom_base.terrain_polygon)
+    margin = config.text_margin or 0.0
+    text_area = (
+        border.buffer(-margin, join_style="mitre")
+        if margin > 0.0
+        else border
+    )
+    if text_area.is_empty:
+        raise Gpx2StlError(
+            "The custom base margin cannot fit the requested --text-margin; "
+            "increase --boundary-percent or reduce --text-margin."
+        )
+    if custom_base.inset_distance <= 1e-6:
+        raise Gpx2StlError(
+            "The custom base has no flat top border for text; increase "
+            "--boundary-percent."
+        )
+    centerline_geometry = custom_base.top_polygon.buffer(
+        -custom_base.inset_distance / 2.0,
+        join_style="mitre",
+    )
+    centerline_parts = [
+        geometry
+        for geometry in shapely.get_parts(centerline_geometry)
+        if isinstance(geometry, Polygon) and geometry.area > 1e-9
+    ]
+    if len(centerline_parts) != 1:
+        raise Gpx2StlError(
+            "The custom base margin cannot form one continuous text path."
+        )
+    centerline = LineString(centerline_parts[0].exterior.coords)
+    perimeter = centerline.length
+    if perimeter <= 1e-6:
+        raise Gpx2StlError("The custom base margin is too small for text.")
+
     properties, font_path = _font_properties(config)
     try:
         font = FT2Font(font_path)
@@ -589,15 +650,6 @@ def _custom_text_mesh(config: Config, custom_base: CustomBase) -> trimesh.Trimes
         rendered = ", ".join(repr(character) for character in missing)
         raise Gpx2StlError(f"Font '{font_path}' does not contain glyphs for: {rendered}")
 
-    center = custom_base.terrain_polygon.centroid
-    inner_top = custom_base.terrain_polygon.bounds[3]
-    outer_top = custom_base.top_polygon.bounds[3]
-    frame_width = outer_top - inner_top
-    if frame_width <= 1e-6:
-        raise Gpx2StlError(
-            "The custom base has no flat top border for text; increase "
-            "--boundary-percent."
-        )
     text_to_path = TextToPath()
     advances = np.asarray(
         [
@@ -616,27 +668,53 @@ def _custom_text_mesh(config: Config, custom_base: CustomBase) -> trimesh.Trimes
     unit_height = float(bounds.height)
     if total_advance <= 0 or unit_height <= 0:
         raise Gpx2StlError("The requested text has no printable glyph outlines.")
-    arc_radius = inner_top - center.y + frame_width / 2.0
-    initial_size = min(
-        frame_width * 0.8 / unit_height,
-        arc_radius * math.radians(140.0) / total_advance,
+    available_width = custom_base.inset_distance - 2.0 * margin
+    if available_width <= 0.0:
+        raise Gpx2StlError(
+            "The custom base margin cannot fit the requested --text-margin; "
+            "increase --boundary-percent or reduce --text-margin."
+        )
+    maximum_size = min(
+        available_width * 0.98 / unit_height,
+        perimeter * 0.98 / total_advance,
     )
 
-    placed: list[Polygon] | None = None
-    font_size = initial_size
-    for _ in range(64):
+    top_center = Point(
+        custom_base.top_polygon.centroid.x,
+        custom_base.top_polygon.bounds[3],
+    )
+    start_distance = centerline.project(top_center)
+    slot_length = perimeter / len(config.text)
+    phase_offsets = [0.0]
+    for step in range(1, 9):
+        offset = slot_length * step / 16.0
+        phase_offsets.extend((offset, -offset))
+    tangent_delta = max(
+        1e-5, min(custom_base.inset_distance / 20.0, perimeter / 10000.0)
+    )
+    containment_border = text_area.buffer(1e-7)
+
+    def layout(font_size: float, phase: float) -> list[Polygon] | None:
         scaled_advances = advances * font_size
-        cursor = -float(np.sum(scaled_advances)) / 2.0
-        vertical_center = (
-            float(bounds.ymin) + float(bounds.ymax)
-        ) * font_size / 2.0
+        tracking = (perimeter - float(np.sum(scaled_advances))) / len(config.text)
+        if tracking < 0:
+            return None
+        cursor = -scaled_advances[0] / 2.0
+        vertical_center = (float(bounds.ymin) + float(bounds.ymax)) * font_size / 2.0
         candidates: list[Polygon] = []
-        fits = True
         for character, advance in zip(config.text, scaled_advances):
             midpoint = cursor + advance / 2.0
-            cursor += advance
+            cursor += advance + tracking
             if character.isspace():
                 continue
+            distance = (start_distance + phase + midpoint) % perimeter
+            location = centerline.interpolate(distance)
+            before = centerline.interpolate((distance - tangent_delta) % perimeter)
+            after = centerline.interpolate((distance + tangent_delta) % perimeter)
+            tangent_x = after.x - before.x
+            tangent_y = after.y - before.y
+            if math.hypot(tangent_x, tangent_y) <= 1e-12:
+                return None
             glyph = _glyph_geometry(
                 TextPath(
                     (-advance / 2.0, -vertical_center),
@@ -645,31 +723,47 @@ def _custom_text_mesh(config: Config, custom_base: CustomBase) -> trimesh.Trimes
                     prop=properties,
                 )
             )
-            angle = math.pi / 2.0 - midpoint / arc_radius
-            rotation = math.degrees(angle - math.pi / 2.0)
+            rotation = math.degrees(math.atan2(tangent_y, tangent_x))
             glyph = affinity.rotate(glyph, rotation, origin=(0.0, 0.0))
             glyph = affinity.translate(
                 glyph,
-                xoff=center.x + arc_radius * math.cos(angle),
-                yoff=center.y + arc_radius * math.sin(angle),
+                xoff=location.x,
+                yoff=location.y,
             )
             glyph_parts = list(_polygon_parts(glyph))
-            if not glyph_parts or any(not border.covers(part) for part in glyph_parts):
-                fits = False
-                break
+            if not glyph_parts or any(
+                not containment_border.covers(part) for part in glyph_parts
+            ):
+                return None
             candidates.extend(glyph_parts)
-        if fits and candidates:
-            placed = candidates
-            break
-        font_size *= 0.9
-        if font_size < 0.05:
-            break
-    if placed is None:
-        raise Gpx2StlError(
-            "The custom base top border cannot fit the requested text; increase "
-            "--boundary-percent, shorten the text, or use a wider font."
-        )
+        return candidates or None
 
+    placed: list[Polygon] | None = None
+    lower = 0.0
+    upper = maximum_size
+    for _ in range(40):
+        candidate_size = (lower + upper) / 2.0
+        candidate_layout = None
+        for phase in phase_offsets:
+            candidate_layout = layout(candidate_size, phase)
+            if candidate_layout is not None:
+                break
+        if candidate_layout is not None:
+            lower = candidate_size
+            placed = candidate_layout
+        else:
+            upper = candidate_size
+    if placed is None or lower < 0.05:
+        raise Gpx2StlError(
+            "The custom base margin cannot fit the requested text; increase "
+            "--boundary-percent, reduce --text-margin, shorten the text, or "
+            "use a narrower font."
+        )
+    return placed
+
+
+def _custom_text_mesh(config: Config, custom_base: CustomBase) -> trimesh.Trimesh:
+    placed = _custom_text_polygons(config, custom_base)
     components: list[trimesh.Trimesh] = []
     for polygon in placed:
         try:
@@ -683,6 +777,8 @@ def _custom_text_mesh(config: Config, custom_base: CustomBase) -> trimesh.Trimes
             (0.0, 0.0, custom_base.top_z - custom_base.overlap_depth)
         )
         components.append(mesh)
+    if not components:
+        raise Gpx2StlError("The requested text has no printable glyph outlines.")
     text_mesh = trimesh.util.concatenate(components)
     text_mesh.remove_unreferenced_vertices()
     return text_mesh

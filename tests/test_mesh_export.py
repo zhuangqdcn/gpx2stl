@@ -94,6 +94,7 @@ def _text_geometry(
     use_3mf: bool,
     shape: Shape = "hex",
     text: str = "TRAIL O",
+    text_margin: float | None = None,
 ):
     paths = tuple(interpolate_elevations(path) for path in read_gpx(simple_gpx))
     route = project_paths(paths)
@@ -108,6 +109,7 @@ def _text_geometry(
         shape=shape,
         text=text,
         text_height=1.0,
+        text_margin=text_margin,
         inner_size_percent=70.0,
         use_3mf=use_3mf,
         max_size=20.0,
@@ -133,6 +135,36 @@ def test_text_layout_has_watertight_frame_route_and_text(
     assert np.isclose(np.ptp(geometry.terrain.vertices[:, 0]), config.max_size)
     assert np.max(geometry.text.vertices[:, 2]) > config.base_height
     assert np.min(geometry.text.vertices[:, 2]) < config.base_height
+
+
+def test_text_margin_controls_generated_frame_clearance(
+    simple_gpx: Path, tmp_path: Path
+) -> None:
+    geometry, config = _text_geometry(
+        simple_gpx,
+        tmp_path / "unused.3mf",
+        True,
+        shape="circle",
+        text_margin=1.0,
+    )
+    assert geometry.text is not None
+    radii = np.linalg.norm(geometry.text.vertices[:, :2], axis=1)
+    inner_radius = config.max_size * config.inner_size_percent / 200.0
+    assert np.min(radii) >= inner_radius + config.text_margin - 1e-7
+    assert np.max(radii) <= config.max_size / 2.0 - config.text_margin + 1e-7
+
+
+def test_text_margin_reports_when_frame_is_too_narrow(
+    simple_gpx: Path, tmp_path: Path
+) -> None:
+    with pytest.raises(Gpx2StlError, match="--text-margin"):
+        _text_geometry(
+            simple_gpx,
+            tmp_path / "unused.3mf",
+            True,
+            shape="circle",
+            text_margin=1.5,
+        )
 
 
 def test_missing_default_font_glyph_is_reported(

@@ -28,6 +28,7 @@ def test_cli_defaults(simple_gpx: Path, monkeypatch: pytest.MonkeyPatch) -> None
     assert config.shape == "square"
     assert config.text is None
     assert config.text_height == 1.0
+    assert config.text_margin is None
     assert config.inner_size_percent == 70.0
     assert config.font_file is None
     assert config.base_stl is None
@@ -146,6 +147,7 @@ def test_every_cli_parameter_overrides_settings_defaults() -> None:
         "shape": "square",
         "text": "SETTINGS",
         "text_height": 1.0,
+        "text_margin": 0.5,
         "inner_size_percent": 70.0,
         "font_file": "settings.ttf",
         "base_stl": "settings.stl",
@@ -178,6 +180,8 @@ def test_every_cli_parameter_overrides_settings_defaults() -> None:
             "CLI",
             "--text-height",
             "1.5",
+            "--text-margin",
+            "2",
             "--inner-size-percent",
             "65",
             "--font-file",
@@ -214,6 +218,7 @@ def test_every_cli_parameter_overrides_settings_defaults() -> None:
     assert args.shape == "hex"
     assert args.text == "CLI"
     assert args.text_height == 1.5
+    assert args.text_margin == 2.0
     assert args.inner_size_percent == 65.0
     assert args.font_file == Path("cli.otf")
     assert args.base_stl == Path("cli.stl")
@@ -311,6 +316,25 @@ def test_inner_size_percent_must_leave_a_frame(
         parser.parse_args(
             [str(simple_gpx), "--no-topo", "--inner-size-percent", value]
         )
+
+
+def test_text_margin_must_be_nonnegative(simple_gpx: Path) -> None:
+    parser = create_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args([str(simple_gpx), "--no-topo", "--text-margin", "-1"])
+
+
+def test_settings_allow_automatic_text_margin(simple_gpx: Path) -> None:
+    parser = create_parser({"text_margin": None, "topo": False})
+    config = config_from_args(parser.parse_args([str(simple_gpx)]), parser)
+    assert config.text_margin is None
+
+
+@pytest.mark.parametrize("value", [-1.0, "wide", True])
+def test_settings_reject_invalid_text_margin(simple_gpx: Path, value: object) -> None:
+    parser = create_parser({"text_margin": value, "topo": False})
+    with pytest.raises(SystemExit):
+        config_from_args(parser.parse_args([str(simple_gpx)]), parser)
 
 
 def test_route_width_must_fit_text_inset(simple_gpx: Path) -> None:

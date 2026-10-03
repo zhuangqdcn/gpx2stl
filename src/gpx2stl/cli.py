@@ -24,6 +24,7 @@ SETTING_KEYS = {
     "shape",
     "text",
     "text_height",
+    "text_margin",
     "inner_size_percent",
     "font_file",
     "base_stl",
@@ -140,13 +141,19 @@ def create_parser(settings: dict[str, Any] | None = None) -> argparse.ArgumentPa
     )
     parser.add_argument(
         "--text",
-        help="raised text following a top arc around a centered terrain circle",
+        help="raised text on the generated frame or custom-base perimeter",
     )
     parser.add_argument(
         "--text-height",
         type=_positive,
         default=1.0,
         help="raised text thickness in mm (default: 1)",
+    )
+    parser.add_argument(
+        "--text-margin",
+        type=_nonnegative,
+        default=None,
+        help="minimum text clearance from frame boundaries in mm (default: automatic)",
     )
     parser.add_argument(
         "--inner-size-percent",
@@ -299,6 +306,7 @@ def config_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser) 
         shape=args.shape,
         text=text,
         text_height=args.text_height,
+        text_margin=args.text_margin,
         inner_size_percent=args.inner_size_percent,
         font_file=font_file,
         base_stl=base_stl,
@@ -353,6 +361,13 @@ def _validate_setting_types(
         parser.error("--boundary-percent must be greater than or equal to zero")
     if args.text_height <= 0:
         parser.error("--text-height must be greater than zero")
+    if args.text_margin is not None:
+        if isinstance(args.text_margin, bool) or not isinstance(
+            args.text_margin, (int, float)
+        ):
+            parser.error("settings.json value 'text_margin' must be a number or null")
+        if not math.isfinite(args.text_margin) or args.text_margin < 0:
+            parser.error("--text-margin must be a finite number greater than or equal to zero")
     if args.inner_size_percent <= 0 or args.inner_size_percent >= 100:
         parser.error("--inner-size-percent must be greater than zero and below 100")
     if args.terrain_height is not None:

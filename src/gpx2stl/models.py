@@ -23,6 +23,7 @@ class Config:
     shape: Shape = "square"
     text: str | None = None
     text_height: float = 1.0
+    text_margin: float | None = None
     inner_size_percent: float = 70.0
     font_file: Path | None = None
     base_stl: Path | None = None

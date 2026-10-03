@@ -12,7 +12,13 @@ from gpx2stl.custom_base import prepare_custom_base
 from gpx2stl.errors import Gpx2StlError
 from gpx2stl.export import export_geometry
 from gpx2stl.gpx import interpolate_elevations, project_paths, read_gpx
-from gpx2stl.mesh import _triangulated_surface_sampler, build_geometry
+from gpx2stl.mesh import (
+    _add_side_faces,
+    _custom_text_polygons,
+    _triangulated_polygon_points,
+    _triangulated_surface_sampler,
+    build_geometry,
+)
 from gpx2stl.models import Config
 
 
@@ -34,6 +40,53 @@ def test_surface_sampler_uses_custom_terrain_faces() -> None:
     )
     result = sampler(np.array([[0.75, 0.25], [0.25, 0.75]]))
     assert np.allclose(result, [0.0, 0.5])
+
+
+def test_custom_triangulation_has_no_long_rooted_face_fans() -> None:
+    polygon = Polygon(
+        [
+            (11.1814089393, 49.7500003179),
+            (34.1599199760, 89.5500068665),
+            (80.1170575631, 89.5500068665),
+            (103.0955685997, 49.7500003179),
+            (80.1170579302, 9.9500007629),
+            (34.1599196089, 9.9500007629),
+        ]
+    )
+    spacing = 1.0
+    points, faces, rings = _triangulated_polygon_points(polygon, spacing)
+    face_array = np.asarray(faces, dtype=np.int64)
+    triangles = points[face_array]
+    edge_lengths = np.concatenate(
+        (
+            np.linalg.norm(triangles[:, 1] - triangles[:, 0], axis=1),
+            np.linalg.norm(triangles[:, 2] - triangles[:, 1], axis=1),
+            np.linalg.norm(triangles[:, 0] - triangles[:, 2], axis=1),
+        )
+    )
+    degree = np.bincount(face_array.ravel(), minlength=len(points))
+    count = len(points)
+    vertices = np.vstack(
+        (
+            np.column_stack((points, np.ones(count))),
+            np.column_stack((points, np.zeros(count))),
+        )
+    )
+    prism_faces: list[tuple[int, int, int]] = []
+    for a, b, c in faces:
+        prism_faces.extend(((a, b, c), (count + a, count + c, count + b)))
+    for ring in rings:
+        _add_side_faces(prism_faces, ring, count)
+    mesh = trimesh.Trimesh(
+        vertices=vertices,
+        faces=np.asarray(prism_faces),
+        process=True,
+    )
+    assert np.max(edge_lengths) <= spacing * 2.0
+    assert np.max(degree) < 20
+    assert mesh.is_watertight
+    assert mesh.is_winding_consistent
+    assert mesh.volume > 0
 
 
 def _write_base(path: Path, polygon: Polygon, height: float = 5.0) -> Path:
@@ -335,6 +388,63 @@ def test_custom_base_text_and_three_material_3mf(
     model = wrapper.CreateModel()
     model.QueryReader("3mf").ReadFromFile(str(config.output))
     assert model.GetMeshObjects().Count() == 3
+
+
+def test_custom_base_text_wraps_once_around_flat_border(
+    simple_gpx: Path, tmp_path: Path
+) -> None:
+    base = _write_base(
+        tmp_path / "base.stl",
+        Polygon([(-30, -20), (30, -20), (30, 20), (-30, 20)]),
+    )
+    route = _route(simple_gpx)
+    custom = prepare_custom_base(base, 15.0, route, 1.0)
+    config = Config(
+        gpx_file=simple_gpx,
+        output=tmp_path / "unused.3mf",
+        topo=False,
+        text="TRAIL",
+        base_stl=base,
+    )
+    polygons = _custom_text_polygons(config, custom)
+    bounds = np.asarray(
+        [
+            min(polygon.bounds[0] for polygon in polygons),
+            min(polygon.bounds[1] for polygon in polygons),
+            max(polygon.bounds[2] for polygon in polygons),
+            max(polygon.bounds[3] for polygon in polygons),
+        ]
+    )
+    top_bounds = custom.top_polygon.bounds
+    border = custom.top_polygon.difference(custom.terrain_polygon).buffer(1e-7)
+    assert bounds[2] - bounds[0] > 0.7 * (top_bounds[2] - top_bounds[0])
+    assert bounds[3] - bounds[1] > 0.7 * (top_bounds[3] - top_bounds[1])
+    assert all(border.covers(polygon) for polygon in polygons)
+
+
+def test_custom_base_text_margin_controls_border_clearance(
+    simple_gpx: Path, tmp_path: Path
+) -> None:
+    base = _write_base(
+        tmp_path / "base.stl",
+        Polygon([(-30, -20), (30, -20), (30, 20), (-30, 20)]),
+    )
+    route = _route(simple_gpx)
+    custom = prepare_custom_base(base, 15.0, route, 1.0)
+    config = Config(
+        gpx_file=simple_gpx,
+        output=tmp_path / "unused.3mf",
+        topo=False,
+        text="TRAIL",
+        text_margin=1.0,
+        base_stl=base,
+    )
+    polygons = _custom_text_polygons(config, custom)
+    text_area = custom.top_polygon.difference(custom.terrain_polygon).buffer(
+        -config.text_margin,
+        join_style="mitre",
+    )
+    assert all(text_area.buffer(1e-7).covers(polygon) for polygon in polygons)
 
 
 def test_custom_base_stl_round_trip_is_watertight(
