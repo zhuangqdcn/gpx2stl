@@ -43,9 +43,10 @@ def _geometry(simple_gpx: Path, output: Path, use_3mf: bool):
 
 def test_no_topo_geometry_is_watertight(simple_gpx: Path, tmp_path: Path) -> None:
     geometry, _ = _geometry(simple_gpx, tmp_path / "unused.3mf", True)
-    assert geometry.terrain.is_watertight
+    assert geometry.base.is_watertight
     assert geometry.route.is_watertight
-    assert np.isclose(np.ptp(geometry.terrain.vertices[:, 0]), 20.0)
+    assert geometry.topography is None
+    assert np.isclose(np.ptp(geometry.base.vertices[:, 0]), 20.0)
 
 
 def test_topo_circle_geometry_is_watertight(simple_gpx: Path, tmp_path: Path) -> None:
@@ -60,11 +61,15 @@ def test_topo_circle_geometry_is_watertight(simple_gpx: Path, tmp_path: Path) ->
         max_size=20.0,
     )
     geometry = build_geometry(route, footprint, transform, config, SlopedDem())
-    assert geometry.terrain.is_watertight
+    assert geometry.base.is_watertight
+    assert geometry.topography is not None
+    assert geometry.topography.is_watertight
     assert geometry.route.is_watertight
-    assert np.isclose(np.ptp(geometry.terrain.vertices[:, 0]), 20.0)
-    top_vertices = geometry.terrain.vertices[
-        geometry.terrain.vertices[:, 2] >= config.base_height
+    assert np.isclose(np.ptp(geometry.base.vertices[:, 0]), 20.0)
+    assert np.isclose(np.ptp(geometry.topography.vertices[:, 0]), 20.0)
+    assert np.min(geometry.topography.vertices[:, 2]) < config.base_height
+    top_vertices = geometry.topography.vertices[
+        geometry.topography.vertices[:, 2] >= config.base_height
     ]
     projected = transform.to_projected(top_vertices[:, :2])
     raw_relief = np.ptp(SlopedDem().sample_projected(projected, route))
@@ -84,9 +89,11 @@ def test_hex_geometry_is_watertight(simple_gpx: Path, tmp_path: Path) -> None:
         max_size=20.0,
     )
     geometry = build_geometry(route, footprint, transform, config, SlopedDem())
-    assert geometry.terrain.is_watertight
+    assert geometry.base.is_watertight
+    assert geometry.topography is not None
+    assert geometry.topography.is_watertight
     assert geometry.route.is_watertight
-    assert np.isclose(np.ptp(geometry.terrain.vertices[:, 0]), 20.0)
+    assert np.isclose(np.ptp(geometry.topography.vertices[:, 0]), 20.0)
 
 
 def _text_geometry(
@@ -131,11 +138,12 @@ def test_text_layout_has_watertight_frame_route_and_text(
         True,
         shape,
     )
-    assert geometry.terrain.is_watertight
+    assert geometry.base.is_watertight
     assert geometry.route.is_watertight
+    assert geometry.topography is None
     assert geometry.text is not None
     assert geometry.text.is_watertight
-    assert np.isclose(np.ptp(geometry.terrain.vertices[:, 0]), config.max_size)
+    assert np.isclose(np.ptp(geometry.base.vertices[:, 0]), config.max_size)
     assert np.max(geometry.text.vertices[:, 2]) > config.base_height
     assert np.min(geometry.text.vertices[:, 2]) < config.base_height
 
@@ -254,13 +262,33 @@ def test_explicit_terrain_height_overrides_automatic_scale(
         terrain_height=30.0,
     )
     geometry = build_geometry(route, footprint, transform, config, SlopedDem())
-    top_vertices = geometry.terrain.vertices[
-        geometry.terrain.vertices[:, 2] >= config.base_height
+    assert geometry.topography is not None
+    top_vertices = geometry.topography.vertices[
+        geometry.topography.vertices[:, 2] >= config.base_height
     ]
     assert np.isclose(np.ptp(top_vertices[:, 2]), 30.0)
 
 
-def test_3mf_round_trip_has_two_meshes_and_materials(
+def _mesh_names(model: object) -> set[str]:
+    names = set()
+    meshes = model.GetMeshObjects()
+    while meshes.MoveNext():
+        names.add(meshes.GetCurrentMeshObject().GetName())
+    return names
+
+
+def _mesh_material_ids(model: object) -> dict[str, int]:
+    material_ids = {}
+    meshes = model.GetMeshObjects()
+    while meshes.MoveNext():
+        mesh = meshes.GetCurrentMeshObject()
+        _, material_id, has_property = mesh.GetObjectLevelProperty()
+        assert has_property
+        material_ids[mesh.GetName()] = material_id
+    return material_ids
+
+
+def test_3mf_round_trip_has_two_meshes_and_four_material_slots(
     simple_gpx: Path, tmp_path: Path
 ) -> None:
     output = tmp_path / "route.3mf"
@@ -270,13 +298,15 @@ def test_3mf_round_trip_has_two_meshes_and_materials(
     model = wrapper.CreateModel()
     model.QueryReader("3mf").ReadFromFile(str(output))
     assert model.GetMeshObjects().Count() == 2
+    assert _mesh_names(model) == {"Base", "GPX route"}
+    assert _mesh_material_ids(model) == {"Base": 4, "GPX route": 1}
     groups = model.GetBaseMaterialGroups()
     assert groups.MoveNext()
     group = groups.GetCurrentBaseMaterialGroup()
-    assert group.GetAllPropertyIDs() == [1, 2]
+    assert group.GetAllPropertyIDs() == [1, 2, 3, 4]
 
 
-def test_3mf_with_text_has_three_meshes_and_materials(
+def test_3mf_with_text_has_three_meshes_and_four_material_slots(
     simple_gpx: Path, tmp_path: Path
 ) -> None:
     output = tmp_path / "route-text.3mf"
@@ -286,10 +316,50 @@ def test_3mf_with_text_has_three_meshes_and_materials(
     model = wrapper.CreateModel()
     model.QueryReader("3mf").ReadFromFile(str(output))
     assert model.GetMeshObjects().Count() == 3
+    assert _mesh_names(model) == {"Base", "GPX route", "Text"}
+    assert _mesh_material_ids(model) == {"Base": 4, "GPX route": 1, "Text": 3}
     groups = model.GetBaseMaterialGroups()
     assert groups.MoveNext()
     group = groups.GetCurrentBaseMaterialGroup()
-    assert group.GetAllPropertyIDs() == [1, 2, 3]
+    assert group.GetAllPropertyIDs() == [1, 2, 3, 4]
+
+
+def test_3mf_with_topography_and_text_has_four_named_objects(
+    simple_gpx: Path, tmp_path: Path
+) -> None:
+    output = tmp_path / "route-topo-text.3mf"
+    geometry, config = _text_geometry(simple_gpx, output, True)
+    config = Config(**{**config.__dict__, "topo": True})
+    paths = read_gpx(simple_gpx)
+    route = project_paths(paths)
+    footprint = create_footprint(route.points, "circle", 10.0, 1.0)
+    footprint = add_route_clearance(footprint, 1.0, 14.0)
+    transform = create_model_transform(footprint, 14.0)
+    geometry = build_geometry(route, footprint, transform, config, SlopedDem())
+
+    export_geometry(geometry, config)
+
+    wrapper = lib3mf.get_wrapper()
+    model = wrapper.CreateModel()
+    model.QueryReader("3mf").ReadFromFile(str(output))
+    assert model.GetMeshObjects().Count() == 4
+    assert _mesh_names(model) == {"Base", "GPX route", "Text", "Topography"}
+    assert _mesh_material_ids(model) == {
+        "Base": 4,
+        "GPX route": 1,
+        "Text": 3,
+        "Topography": 2,
+    }
+    groups = model.GetBaseMaterialGroups()
+    assert groups.MoveNext()
+    group = groups.GetCurrentBaseMaterialGroup()
+    assert group.GetAllPropertyIDs() == [1, 2, 3, 4]
+    assert [group.GetName(index) for index in range(1, 5)] == [
+        "Filament 1 - Route",
+        "Filament 2 - Topography",
+        "Filament 3 - Text",
+        "Filament 4 - Base",
+    ]
 
 
 def test_stl_round_trip_is_watertight(simple_gpx: Path, tmp_path: Path) -> None:
@@ -305,6 +375,25 @@ def test_stl_with_text_is_watertight(simple_gpx: Path, tmp_path: Path) -> None:
     output = tmp_path / "route-text.stl"
     geometry, config = _text_geometry(simple_gpx, output, False)
     export_geometry(geometry, config)
+    loaded = trimesh.load_mesh(output, process=True)
+    assert isinstance(loaded, trimesh.Trimesh)
+    assert loaded.is_watertight
+
+
+def test_stl_unions_separate_base_topography_route_and_text(
+    simple_gpx: Path, tmp_path: Path
+) -> None:
+    output = tmp_path / "route-topo-text.stl"
+    _, original_config = _text_geometry(simple_gpx, output, False)
+    config = Config(**{**original_config.__dict__, "topo": True})
+    route = project_paths(read_gpx(simple_gpx))
+    footprint = create_footprint(route.points, "circle", 10.0, 1.0)
+    footprint = add_route_clearance(footprint, 1.0, 14.0)
+    transform = create_model_transform(footprint, 14.0)
+    geometry = build_geometry(route, footprint, transform, config, SlopedDem())
+
+    export_geometry(geometry, config)
+
     loaded = trimesh.load_mesh(output, process=True)
     assert isinstance(loaded, trimesh.Trimesh)
     assert loaded.is_watertight

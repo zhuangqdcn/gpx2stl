@@ -44,36 +44,43 @@ def _add_mesh(model: object, mesh: trimesh.Trimesh, name: str) -> object:
     return mesh_object
 
 
-def _write_3mf(path: Path, geometry: Geometry, topo: bool) -> None:
+def _write_3mf(path: Path, geometry: Geometry) -> None:
     try:
         wrapper = lib3mf.get_wrapper()
         model = wrapper.CreateModel()
         materials = model.AddBaseMaterialGroup()
         route_material = materials.AddMaterial("Filament 1 - Route", _color(255, 80, 40))
-        terrain_label = "Topography" if topo else "Base"
-        terrain_material = materials.AddMaterial(
-            f"Filament 2 - {terrain_label}", _color(180, 180, 180)
+        topography_material = materials.AddMaterial(
+            "Filament 2 - Topography", _color(120, 180, 100)
         )
-        text_material = None
-        if geometry.text is not None:
-            text_material = materials.AddMaterial(
-                "Filament 3 - Text", _color(40, 100, 220)
-            )
+        text_material = materials.AddMaterial(
+            "Filament 3 - Text", _color(40, 100, 220)
+        )
+        base_material = materials.AddMaterial(
+            "Filament 4 - Base", _color(180, 180, 180)
+        )
 
         route = _add_mesh(model, geometry.route, "GPX route")
         route.SetObjectLevelProperty(materials.GetResourceID(), route_material)
-        terrain = _add_mesh(model, geometry.terrain, terrain_label)
-        terrain.SetObjectLevelProperty(materials.GetResourceID(), terrain_material)
+        base = _add_mesh(model, geometry.base, "Base")
+        base.SetObjectLevelProperty(materials.GetResourceID(), base_material)
 
         assembly = model.AddComponentsObject()
-        assembly.SetName("GPX route and topography")
+        assembly.SetName("GPX route model")
         identity = wrapper.GetIdentityTransform()
         assembly.AddComponent(route, identity)
-        assembly.AddComponent(terrain, identity)
-        if geometry.text is not None and text_material is not None:
+        if geometry.topography is not None:
+            topography = _add_mesh(model, geometry.topography, "Topography")
+            topography.SetObjectLevelProperty(
+                materials.GetResourceID(),
+                topography_material,
+            )
+            assembly.AddComponent(topography, identity)
+        if geometry.text is not None:
             text = _add_mesh(model, geometry.text, "Text")
             text.SetObjectLevelProperty(materials.GetResourceID(), text_material)
             assembly.AddComponent(text, identity)
+        assembly.AddComponent(base, identity)
         model.AddBuildItem(assembly, identity)
         model.QueryWriter("3mf").WriteToFile(str(path))
 
@@ -82,7 +89,11 @@ def _write_3mf(path: Path, geometry: Geometry, topo: bool) -> None:
         reader.ReadFromFile(str(path))
         mesh_count = check_model.GetMeshObjects().Count()
         material_groups = check_model.GetBaseMaterialGroups().Count()
-        expected_meshes = 3 if geometry.text is not None else 2
+        expected_meshes = (
+            2
+            + int(geometry.topography is not None)
+            + int(geometry.text is not None)
+        )
         if mesh_count != expected_meshes or material_groups != 1:
             raise Gpx2StlError(
                 f"3MF validation failed: expected {expected_meshes} meshes "
@@ -96,7 +107,9 @@ def _write_3mf(path: Path, geometry: Geometry, topo: bool) -> None:
 
 def _write_stl(path: Path, geometry: Geometry) -> None:
     try:
-        meshes = [geometry.terrain, geometry.route]
+        meshes = [geometry.base, geometry.route]
+        if geometry.topography is not None:
+            meshes.append(geometry.topography)
         if geometry.text is not None:
             meshes.append(geometry.text)
         combined = trimesh.boolean.union(
@@ -141,12 +154,16 @@ def export_geometry(
         ) as temporary:
             temporary_path = Path(temporary.name)
         if config.use_3mf:
-            material_count = 3 if geometry.text is not None else 2
-            progress(f"Writing {material_count}-material 3MF package")
-            _write_3mf(temporary_path, geometry, config.topo)
+            object_count = (
+                2
+                + int(geometry.topography is not None)
+                + int(geometry.text is not None)
+            )
+            progress(f"Writing {object_count}-object, 4-material 3MF package")
+            _write_3mf(temporary_path, geometry)
             progress("Validated 3MF mesh and material resources")
         else:
-            progress("Unioning route and terrain into one STL mesh")
+            progress("Unioning base, route, and optional features into one STL mesh")
             _write_stl(temporary_path, geometry)
             progress("Validated watertight STL output")
         progress("Atomically replacing the destination file")

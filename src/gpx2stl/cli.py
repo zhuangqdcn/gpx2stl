@@ -113,8 +113,18 @@ def create_parser(settings: dict[str, Any] | None = None) -> argparse.ArgumentPa
         prog="gpx2stl",
         description="Convert GPX tracks and routes into printable terrain models.",
     )
-    parser.add_argument("gpx_file", nargs="?", type=Path, help="input GPX file")
-    parser.add_argument("-o", "--output", type=Path, help="output .3mf or .stl path")
+    parser.add_argument(
+        "gpx_file",
+        nargs="?",
+        type=Path,
+        help="input GPX file or directory containing GPX files",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        help="output file, or output directory for a GPX directory input",
+    )
     parser.add_argument("--route-width", type=_positive, default=1.0, help="route width in mm")
     parser.add_argument(
         "--route-height",
@@ -331,6 +341,70 @@ def config_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser) 
     )
 
 
+def configs_from_args(
+    args: argparse.Namespace, parser: argparse.ArgumentParser
+) -> tuple[Config, ...]:
+    if args.gpx_file is None:
+        parser.error("gpx_file is required as an argument or settings.json value")
+    _validate_setting_types(args, parser)
+    gpx_input = Path(args.gpx_file).resolve()
+    if not gpx_input.exists():
+        parser.error(f"GPX input does not exist: {gpx_input}")
+    if gpx_input.is_file():
+        return (config_from_args(args, parser),)
+    if not gpx_input.is_dir():
+        parser.error(f"GPX input is not a file or directory: {gpx_input}")
+
+    try:
+        gpx_files = tuple(
+            sorted(
+                (
+                    path
+                    for path in gpx_input.iterdir()
+                    if path.is_file() and path.suffix.lower() == ".gpx"
+                ),
+                key=lambda path: (path.name.lower(), path.name),
+            )
+        )
+    except OSError as exc:
+        parser.error(f"unable to read GPX directory '{gpx_input}': {exc}")
+    if not gpx_files:
+        parser.error(f"GPX directory contains no .gpx files: {gpx_input}")
+
+    output_dir = Path(args.output).resolve() if args.output else gpx_input
+    if not output_dir.is_dir():
+        parser.error(
+            "output must be an existing directory when the GPX input is a directory: "
+            f"{output_dir}"
+        )
+    suffix = ".3mf" if args.use_3mf else ".stl"
+    output_names = [f"{gpx_file.stem}{suffix}" for gpx_file in gpx_files]
+    output_name_keys = [name.casefold() for name in output_names]
+    duplicate_names = sorted(
+        {
+            name
+            for name, key in zip(output_names, output_name_keys, strict=True)
+            if output_name_keys.count(key) > 1
+        }
+    )
+    if duplicate_names:
+        parser.error(
+            "GPX directory contains files that map to the same output name: "
+            + ", ".join(duplicate_names)
+        )
+    configs = []
+    for gpx_file, output_name in zip(gpx_files, output_names, strict=True):
+        file_args = argparse.Namespace(
+            **{
+                **vars(args),
+                "gpx_file": gpx_file,
+                "output": output_dir / output_name,
+            }
+        )
+        configs.append(config_from_args(file_args, parser))
+    return tuple(configs)
+
+
 def _validate_setting_types(
     args: argparse.Namespace, parser: argparse.ArgumentParser
 ) -> None:
@@ -415,8 +489,9 @@ def main(argv: list[str] | None = None) -> None:
     try:
         settings = load_settings(find_settings())
         parser = create_parser(settings)
-        config = config_from_args(parser.parse_args(argv), parser)
-        convert(config)
+        configs = configs_from_args(parser.parse_args(argv), parser)
+        for config in configs:
+            convert(config)
     except Gpx2StlError as exc:
         parser.exit(1, f"gpx2stl: error: {exc}\n")
     except KeyboardInterrupt:

@@ -7,6 +7,7 @@ import pytest
 import gpx2stl.cli
 from gpx2stl.cli import (
     config_from_args,
+    configs_from_args,
     create_parser,
     find_settings,
     load_settings,
@@ -50,6 +51,102 @@ def test_no_topo_stl_does_not_require_key(simple_gpx: Path) -> None:
     )
     assert config.output.suffix == ".stl"
     assert config.api_key is None
+
+
+def test_directory_input_creates_one_config_per_gpx(
+    simple_gpx: Path, tmp_path: Path
+) -> None:
+    routes = tmp_path / "routes"
+    routes.mkdir()
+    (routes / "zeta.gpx").write_bytes(simple_gpx.read_bytes())
+    (routes / "Alpha.GPX").write_bytes(simple_gpx.read_bytes())
+    (routes / "notes.txt").write_text("not a route", encoding="utf-8")
+    nested = routes / "nested"
+    nested.mkdir()
+    (nested / "ignored.gpx").write_bytes(simple_gpx.read_bytes())
+    parser = create_parser()
+
+    configs = configs_from_args(
+        parser.parse_args([str(routes), "--no-topo"]),
+        parser,
+    )
+
+    assert [config.gpx_file.name for config in configs] == ["Alpha.GPX", "zeta.gpx"]
+    assert [config.output for config in configs] == [
+        routes / "Alpha.3mf",
+        routes / "zeta.3mf",
+    ]
+
+
+def test_directory_input_uses_output_directory(
+    simple_gpx: Path, tmp_path: Path
+) -> None:
+    routes = tmp_path / "routes"
+    routes.mkdir()
+    output = tmp_path / "models"
+    output.mkdir()
+    (routes / "first.gpx").write_bytes(simple_gpx.read_bytes())
+    (routes / "second.gpx").write_bytes(simple_gpx.read_bytes())
+    parser = create_parser()
+
+    configs = configs_from_args(
+        parser.parse_args(
+            [str(routes), "--no-topo", "--no-3mf", "--output", str(output)]
+        ),
+        parser,
+    )
+
+    assert [config.output for config in configs] == [
+        output / "first.stl",
+        output / "second.stl",
+    ]
+
+
+def test_directory_input_rejects_empty_directory(tmp_path: Path) -> None:
+    parser = create_parser()
+    with pytest.raises(SystemExit):
+        configs_from_args(
+            parser.parse_args([str(tmp_path), "--no-topo"]),
+            parser,
+        )
+
+
+def test_directory_input_requires_output_directory(
+    simple_gpx: Path, tmp_path: Path
+) -> None:
+    routes = tmp_path / "routes"
+    routes.mkdir()
+    (routes / "route.gpx").write_bytes(simple_gpx.read_bytes())
+    parser = create_parser()
+    with pytest.raises(SystemExit):
+        configs_from_args(
+            parser.parse_args(
+                [
+                    str(routes),
+                    "--no-topo",
+                    "--output",
+                    str(tmp_path / "models.3mf"),
+                ]
+            ),
+            parser,
+        )
+
+
+def test_directory_input_rejects_duplicate_output_stems(
+    simple_gpx: Path, tmp_path: Path
+) -> None:
+    routes = tmp_path / "routes"
+    routes.mkdir()
+    (routes / "route.gpx").write_bytes(simple_gpx.read_bytes())
+    (routes / "route.GPX").write_bytes(simple_gpx.read_bytes())
+    if len(tuple(routes.iterdir())) < 2:
+        pytest.skip("filesystem is case-insensitive")
+    parser = create_parser()
+    with pytest.raises(SystemExit):
+        configs_from_args(
+            parser.parse_args([str(routes), "--no-topo"]),
+            parser,
+        )
 
 
 def test_auto_topo_defers_missing_api_key(simple_gpx: Path) -> None:
@@ -107,6 +204,22 @@ def test_main_loads_dotenv_before_resolving_config(
     gpx2stl.cli.main([str(simple_gpx)])
 
     assert captured[0].api_key == "dotenv-key"
+
+
+def test_main_converts_each_directory_gpx_individually(
+    simple_gpx: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    routes = tmp_path / "routes"
+    routes.mkdir()
+    (routes / "one.gpx").write_bytes(simple_gpx.read_bytes())
+    (routes / "two.gpx").write_bytes(simple_gpx.read_bytes())
+    captured = []
+    monkeypatch.setattr(gpx2stl.cli, "convert", captured.append)
+
+    gpx2stl.cli.main([str(routes), "--no-topo"])
+
+    assert [config.gpx_file.name for config in captured] == ["one.gpx", "two.gpx"]
+    assert [config.output.name for config in captured] == ["one.3mf", "two.3mf"]
 
 
 def test_settings_supply_defaults_and_cli_wins(

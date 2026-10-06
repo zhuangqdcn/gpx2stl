@@ -47,6 +47,7 @@ def test_conversion_uses_local_file_without_network(
 
     monkeypatch.setattr(gpx2stl.pipeline.OpenTopographyClient, "fetch", fail_online)
     output = tmp_path / "local.3mf"
+    messages: list[str] = []
     convert(
         Config(
             gpx_file=simple_gpx,
@@ -55,9 +56,11 @@ def test_conversion_uses_local_file_without_network(
             topo_file=topo_file,
             topo_dir=tmp_path / "asset",
             max_size=20.0,
-        )
+        ),
+        progress=messages.append,
     )
     assert output.is_file()
+    assert any(message.startswith("Generated topography mesh") for message in messages)
 
 
 def test_conversion_reports_meaningful_progress(
@@ -79,8 +82,10 @@ def test_conversion_reports_meaningful_progress(
     assert any(message.startswith("Loaded 1 path") for message in messages)
     assert any(message.startswith("Created square footprint") for message in messages)
     assert "Topography disabled; generating a flat base" in messages
-    assert "Generating watertight terrain/base and route meshes" in messages
-    assert "Writing 2-material 3MF package" in messages
+    assert "Generating watertight base, topography, and route meshes" in messages
+    assert any(message.startswith("Generated base mesh") for message in messages)
+    assert not any(message.startswith("Generated topography mesh") for message in messages)
+    assert "Writing 2-object, 4-material 3MF package" in messages
     assert "Validated 3MF mesh and material resources" in messages
     assert messages[-1] == f"Finished writing {output}"
 
@@ -107,7 +112,7 @@ def test_text_conversion_uses_circular_inset_and_three_materials(
         for message in messages
     )
     assert any(message.startswith("Generated text mesh") for message in messages)
-    assert "Writing 3-material 3MF package" in messages
+    assert "Writing 3-object, 4-material 3MF package" in messages
 
 
 def test_conversion_preserves_custom_stl_dimensions(

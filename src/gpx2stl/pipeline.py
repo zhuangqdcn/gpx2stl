@@ -153,7 +153,7 @@ def convert(
             progress("Topography disabled; generating a flat base")
         else:
             progress("Topography disabled; using the flat custom top")
-    progress("Generating watertight terrain/base and route meshes")
+    progress("Generating watertight base, topography, and route meshes")
     geometry = build_geometry(
         route,
         footprint,
@@ -163,9 +163,15 @@ def convert(
         custom_base,
     )
     progress(
-        f"Generated terrain/base mesh ({len(geometry.terrain.vertices):,} vertices, "
-        f"{len(geometry.terrain.faces):,} faces)"
+        f"Generated base mesh ({len(geometry.base.vertices):,} vertices, "
+        f"{len(geometry.base.faces):,} faces)"
     )
+    if geometry.topography is not None:
+        progress(
+            "Generated topography mesh "
+            f"({len(geometry.topography.vertices):,} vertices, "
+            f"{len(geometry.topography.faces):,} faces)"
+        )
     progress(
         f"Generated route mesh ({len(geometry.route.vertices):,} vertices, "
         f"{len(geometry.route.faces):,} faces)"

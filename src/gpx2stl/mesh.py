@@ -31,8 +31,9 @@ HeightFunction = Callable[[NDArray[np.float64]], NDArray[np.float64]]
 
 @dataclass(frozen=True)
 class Geometry:
-    terrain: trimesh.Trimesh
+    base: trimesh.Trimesh
     route: trimesh.Trimesh
+    topography: trimesh.Trimesh | None = None
     text: trimesh.Trimesh | None = None
 
 
@@ -75,6 +76,13 @@ def _surface_sampler(
         if np.any(missing):
             result[missing] = np.asarray(nearest(query[missing]), dtype=np.float64)
         return result
+
+    return sample
+
+
+def _constant_surface(height: float) -> HeightFunction:
+    def sample(query: NDArray[np.float64]) -> NDArray[np.float64]:
+        return np.full(len(query), height, dtype=np.float64)
 
     return sample
 
@@ -144,6 +152,7 @@ def _polygon_terrain(
     transform: ModelTransform,
     raw_height: Callable[[NDArray[np.float64]], NDArray[np.float64]] | None,
     config: Config,
+    bottom: float,
 ) -> tuple[trimesh.Trimesh, HeightFunction]:
     outline = transform.to_model(
         np.asarray(
@@ -199,7 +208,7 @@ def _polygon_terrain(
     vertices = np.vstack(
         (
             np.column_stack((points, top)),
-            np.column_stack((points, np.zeros(count))),
+            np.column_stack((points, np.full(count, bottom))),
         )
     )
     faces: list[tuple[int, int, int]] = []
@@ -331,11 +340,7 @@ def _custom_terrain(
     for ring in rings:
         _add_side_faces(faces, ring, count)
     patch = trimesh.Trimesh(vertices=vertices, faces=np.asarray(faces), process=True)
-    terrain = _union_meshes(
-        [custom_base.mesh.copy(), patch],
-        "the custom STL base and terrain",
-    )
-    return terrain, _triangulated_surface_sampler(points, top, top_faces)
+    return patch, _triangulated_surface_sampler(points, top, top_faces)
 
 
 def _structured_square(
@@ -343,6 +348,7 @@ def _structured_square(
     transform: ModelTransform,
     raw_height: Callable[[NDArray[np.float64]], NDArray[np.float64]] | None,
     config: Config,
+    bottom: float,
 ) -> tuple[trimesh.Trimesh, HeightFunction]:
     resolution = _model_resolution(config.max_size)
     radius = footprint.radius * transform.scale
@@ -360,7 +366,7 @@ def _structured_square(
     vertices = np.vstack(
         (
             np.column_stack((points, top)),
-            np.column_stack((points, np.zeros(count, dtype=np.float64))),
+            np.column_stack((points, np.full(count, bottom, dtype=np.float64))),
         )
     )
     faces: list[tuple[int, int, int]] = []
@@ -391,6 +397,7 @@ def _polar_circle(
     transform: ModelTransform,
     raw_height: Callable[[NDArray[np.float64]], NDArray[np.float64]] | None,
     config: Config,
+    bottom: float,
 ) -> tuple[trimesh.Trimesh, HeightFunction]:
     diameter = footprint.diameter * transform.scale
     rings = max(12, min(128, math.ceil(diameter / 2.0)))
@@ -421,7 +428,7 @@ def _polar_circle(
     vertices = np.vstack(
         (
             np.column_stack((xy, top)),
-            np.column_stack((xy, np.zeros(count, dtype=np.float64))),
+            np.column_stack((xy, np.full(count, bottom, dtype=np.float64))),
         )
     )
     faces: list[tuple[int, int, int]] = []
@@ -452,21 +459,6 @@ def _polar_circle(
     _add_side_faces(faces, outer, count)
     mesh = trimesh.Trimesh(vertices=vertices, faces=np.asarray(faces), process=True)
     return mesh, _surface_sampler(xy, top)
-
-
-def _union_meshes(meshes: list[trimesh.Trimesh], description: str) -> trimesh.Trimesh:
-    try:
-        combined = trimesh.boolean.union(
-            meshes,
-            engine="manifold",
-            check_volume=True,
-        )
-    except Exception as exc:
-        raise Gpx2StlError(f"Unable to combine {description}: {exc}") from exc
-    if not isinstance(combined, trimesh.Trimesh) or combined.is_empty:
-        raise Gpx2StlError(f"Unable to combine {description}.")
-    combined.remove_unreferenced_vertices()
-    return combined
 
 
 def _font_properties(config: Config) -> tuple[FontProperties, Path]:
@@ -994,39 +986,70 @@ def build_geometry(
 ) -> Geometry:
     raw_height = None if dem is None else _raw_height_function(dem, route, transform)
     if custom_base is not None:
-        terrain, surface = _custom_terrain(custom_base, raw_height, config)
+        base = custom_base.mesh.copy()
+        if config.topo:
+            topography, surface = _custom_terrain(custom_base, raw_height, config)
+        else:
+            topography = None
+            surface = _constant_surface(custom_base.top_z)
         text_mesh = (
             _custom_text_mesh(config, custom_base)
             if config.text is not None
             else None
         )
-    elif config.text is not None:
-        if footprint.shape != "circle":
-            raise Gpx2StlError("Text layout requires a circular terrain footprint.")
-        inner_terrain, surface = _polar_circle(
-            footprint, transform, raw_height, config
-        )
-        outer_base = _convex_prism(
+    else:
+        base = _convex_prism(
             _model_outline(config.shape, config.max_size),
             config.base_height,
         )
-        terrain = _union_meshes(
-            [outer_base, inner_terrain],
-            "the outer frame and terrain",
+        overlap_depth = min(0.05, config.base_height / 2.0)
+        topography_bottom = config.base_height - overlap_depth
+        if config.topo:
+            if config.text is not None:
+                if footprint.shape != "circle":
+                    raise Gpx2StlError("Text layout requires a circular terrain footprint.")
+                topography, surface = _polar_circle(
+                    footprint,
+                    transform,
+                    raw_height,
+                    config,
+                    topography_bottom,
+                )
+            elif footprint.shape == "square":
+                topography, surface = _structured_square(
+                    footprint,
+                    transform,
+                    raw_height,
+                    config,
+                    topography_bottom,
+                )
+            elif footprint.shape == "circle":
+                topography, surface = _polar_circle(
+                    footprint,
+                    transform,
+                    raw_height,
+                    config,
+                    topography_bottom,
+                )
+            else:
+                topography, surface = _polygon_terrain(
+                    footprint,
+                    transform,
+                    raw_height,
+                    config,
+                    topography_bottom,
+                )
+        else:
+            topography = None
+            surface = _constant_surface(config.base_height)
+        text_mesh = (
+            _text_mesh(
+                config,
+                footprint.radius * transform.scale,
+            )
+            if config.text is not None
+            else None
         )
-        text_mesh = _text_mesh(
-            config,
-            footprint.radius * transform.scale,
-        )
-    elif footprint.shape == "square":
-        terrain, surface = _structured_square(footprint, transform, raw_height, config)
-        text_mesh = None
-    elif footprint.shape == "circle":
-        terrain, surface = _polar_circle(footprint, transform, raw_height, config)
-        text_mesh = None
-    else:
-        terrain, surface = _polygon_terrain(footprint, transform, raw_height, config)
-        text_mesh = None
     route_mesh = _route_mesh(
         route,
         transform,
@@ -1036,7 +1059,9 @@ def build_geometry(
         custom_base is None,
         custom_base.overlap_depth if custom_base is not None else 0.05,
     )
-    meshes = [("terrain/base", terrain), ("route", route_mesh)]
+    meshes = [("base", base), ("route", route_mesh)]
+    if topography is not None:
+        meshes.append(("topography", topography))
     if text_mesh is not None:
         meshes.append(("text", text_mesh))
     for name, mesh in meshes:
@@ -1044,4 +1069,9 @@ def build_geometry(
             raise Gpx2StlError(f"Generated {name} mesh is not watertight.")
         if not np.all(np.isfinite(mesh.vertices)) or mesh.volume <= 0:
             raise Gpx2StlError(f"Generated {name} mesh is invalid.")
-    return Geometry(terrain=terrain, route=route_mesh, text=text_mesh)
+    return Geometry(
+        base=base,
+        route=route_mesh,
+        topography=topography,
+        text=text_mesh,
+    )

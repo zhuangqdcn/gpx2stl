@@ -170,7 +170,8 @@ def test_custom_terrain_preserves_a_top_hole(
         None,
         custom,
     )
-    assert geometry.terrain.is_watertight
+    assert geometry.base.is_watertight
+    assert geometry.topography is None
     assert len(custom.terrain_polygon.interiors) == 1
 
 
@@ -209,7 +210,8 @@ def test_custom_terrain_handles_fractional_boundaries(
         None,
         custom,
     )
-    assert geometry.terrain.is_watertight
+    assert geometry.base.is_watertight
+    assert geometry.topography is None
 
 
 def test_custom_base_rejects_disconnected_highest_regions(
@@ -246,6 +248,7 @@ def _custom_geometry(
     *,
     text: str | None,
     use_3mf: bool,
+    topo: bool = False,
 ):
     base = _write_base(
         tmp_path / "base.stl",
@@ -257,7 +260,7 @@ def _custom_geometry(
     config = Config(
         gpx_file=simple_gpx,
         output=output,
-        topo=False,
+        topo=topo,
         text=text,
         base_stl=base,
         use_3mf=use_3mf,
@@ -267,7 +270,7 @@ def _custom_geometry(
         custom.transform.footprint,
         custom.transform,
         config,
-        None,
+        SlopedDem() if topo else None,
         custom,
     )
     return geometry, config
@@ -282,10 +285,11 @@ def test_custom_base_geometry_is_watertight_and_preserves_bounds(
         text=None,
         use_3mf=True,
     )
-    assert geometry.terrain.is_watertight
+    assert geometry.base.is_watertight
     assert geometry.route.is_watertight
-    assert np.allclose(geometry.terrain.bounds[0, :2], [-30.0, -20.0])
-    assert np.allclose(geometry.terrain.bounds[1, :2], [30.0, 20.0])
+    assert geometry.topography is None
+    assert np.allclose(geometry.base.bounds[0, :2], [-30.0, -20.0])
+    assert np.allclose(geometry.base.bounds[1, :2], [30.0, 20.0])
     assert np.min(geometry.route.vertices[:, 2]) >= 4.9
 
 
@@ -369,11 +373,14 @@ def test_custom_base_supports_dem_relief(
         SlopedDem(),
         custom,
     )
-    assert geometry.terrain.is_watertight
-    assert np.max(geometry.terrain.vertices[:, 2]) > custom.top_z
+    assert geometry.base.is_watertight
+    assert geometry.topography is not None
+    assert geometry.topography.is_watertight
+    assert np.max(geometry.topography.vertices[:, 2]) > custom.top_z
+    assert np.min(geometry.topography.vertices[:, 2]) < custom.top_z
 
 
-def test_custom_base_text_and_three_material_3mf(
+def test_custom_base_text_uses_separate_base_object(
     simple_gpx: Path, tmp_path: Path
 ) -> None:
     geometry, config = _custom_geometry(
@@ -389,6 +396,43 @@ def test_custom_base_text_and_three_material_3mf(
     model = wrapper.CreateModel()
     model.QueryReader("3mf").ReadFromFile(str(config.output))
     assert model.GetMeshObjects().Count() == 3
+    meshes = model.GetMeshObjects()
+    names = set()
+    while meshes.MoveNext():
+        names.add(meshes.GetCurrentMeshObject().GetName())
+    assert names == {"Base", "GPX route", "Text"}
+
+
+def test_custom_base_topography_and_text_export_as_four_objects(
+    simple_gpx: Path, tmp_path: Path
+) -> None:
+    geometry, config = _custom_geometry(
+        simple_gpx,
+        tmp_path,
+        text="TRAIL",
+        use_3mf=True,
+        topo=True,
+    )
+    export_geometry(geometry, config)
+    wrapper = lib3mf.get_wrapper()
+    model = wrapper.CreateModel()
+    model.QueryReader("3mf").ReadFromFile(str(config.output))
+    meshes = model.GetMeshObjects()
+    names = set()
+    material_ids = {}
+    while meshes.MoveNext():
+        mesh = meshes.GetCurrentMeshObject()
+        names.add(mesh.GetName())
+        _, material_id, has_property = mesh.GetObjectLevelProperty()
+        assert has_property
+        material_ids[mesh.GetName()] = material_id
+    assert names == {"Base", "GPX route", "Text", "Topography"}
+    assert material_ids == {
+        "Base": 4,
+        "GPX route": 1,
+        "Text": 3,
+        "Topography": 2,
+    }
 
 
 def test_custom_base_text_wraps_once_around_flat_border(
