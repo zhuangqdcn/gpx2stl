@@ -249,6 +249,8 @@ def _custom_geometry(
     text: str | None,
     use_3mf: bool,
     topo: bool = False,
+    text_mode: str = "raised",
+    text_depth: float = 0.6,
 ):
     base = _write_base(
         tmp_path / "base.stl",
@@ -262,6 +264,8 @@ def _custom_geometry(
         output=output,
         topo=topo,
         text=text,
+        text_mode=text_mode,
+        text_depth=text_depth,
         base_stl=base,
         use_3mf=use_3mf,
     )
@@ -435,7 +439,7 @@ def test_custom_base_topography_and_text_export_as_four_objects(
     }
 
 
-def test_custom_base_text_wraps_once_around_flat_border(
+def test_custom_base_text_uses_compact_run_inside_flat_border(
     simple_gpx: Path, tmp_path: Path
 ) -> None:
     base = _write_base(
@@ -460,11 +464,35 @@ def test_custom_base_text_wraps_once_around_flat_border(
             max(polygon.bounds[3] for polygon in polygons),
         ]
     )
-    top_bounds = custom.top_polygon.bounds
     border = custom.top_polygon.difference(custom.terrain_polygon).buffer(1e-7)
-    assert bounds[2] - bounds[0] > 0.7 * (top_bounds[2] - top_bounds[0])
-    assert bounds[3] - bounds[1] > 0.7 * (top_bounds[3] - top_bounds[1])
+    assert bounds[2] > bounds[0]
+    assert bounds[3] > bounds[1]
     assert all(border.covers(polygon) for polygon in polygons)
+
+
+def test_custom_base_embedded_text_is_flush_and_cuts_cavity(
+    simple_gpx: Path, tmp_path: Path
+) -> None:
+    geometry, config = _custom_geometry(
+        simple_gpx,
+        tmp_path,
+        text="TRAIL",
+        use_3mf=True,
+        text_mode="embedded",
+        text_depth=0.8,
+    )
+    assert geometry.text is not None
+    assert geometry.base.is_watertight
+    assert geometry.text.is_watertight
+    original = trimesh.load_mesh(config.base_stl, process=True)
+    assert isinstance(original, trimesh.Trimesh)
+    assert geometry.text.bounds[1, 2] == pytest.approx(original.bounds[1, 2])
+    assert np.ptp(geometry.text.bounds[:, 2]) == pytest.approx(config.text_depth)
+    assert geometry.base.volume < original.volume
+    assert geometry.base.volume + geometry.text.volume == pytest.approx(
+        original.volume,
+        rel=1e-6,
+    )
 
 
 def test_custom_base_text_seam_is_bottom_centered(

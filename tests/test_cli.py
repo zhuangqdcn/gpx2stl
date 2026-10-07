@@ -34,8 +34,15 @@ def test_cli_defaults(simple_gpx: Path, monkeypatch: pytest.MonkeyPatch) -> None
     assert config.text_height == 1.0
     assert config.text_margin is None
     assert config.text_end_gap == 0.0
+    assert config.text_align == "center"
+    assert config.text_mode == "raised"
+    assert config.text_depth == 0.6
     assert config.inner_size_percent == 70.0
+    assert config.font_family == "DejaVu Sans"
     assert config.font_file is None
+    assert config.font_size is None
+    assert config.font_weight == "normal"
+    assert config.font_style == "normal"
     assert config.base_stl is None
     assert config.max_size == 200.0
     assert config.terrain_height is None
@@ -341,8 +348,15 @@ def test_every_cli_parameter_overrides_settings_defaults() -> None:
         "text_height": 1.0,
         "text_margin": 0.5,
         "text_end_gap": 1.0,
+        "text_align": "left",
+        "text_mode": "raised",
+        "text_depth": 0.5,
         "inner_size_percent": 70.0,
-        "font_file": "settings.ttf",
+        "font_family": "Settings Sans",
+        "font_file": None,
+        "font_size": 4.0,
+        "font_weight": "normal",
+        "font_style": "normal",
         "base_stl": "settings.stl",
         "use_3mf": True,
         "max_size": 200.0,
@@ -379,13 +393,25 @@ def test_every_cli_parameter_overrides_settings_defaults() -> None:
             "2",
             "--text-end-gap",
             "3",
+            "--text-align",
+            "right",
+            "--text-mode",
+            "embedded",
+            "--text-depth",
+            "0.8",
             "--inner-size-percent",
             "65",
-            "--font-file",
-            "cli.otf",
+            "--font-family",
+            "CLI Sans",
+            "--font-size",
+            "5",
+            "--font-weight",
+            "bold",
+            "--font-style",
+            "italic",
             "--base-stl",
             "cli.stl",
-            "--no-3mf",
+            "--3mf",
             "--max-size",
             "180",
             "--terrain-height",
@@ -418,10 +444,17 @@ def test_every_cli_parameter_overrides_settings_defaults() -> None:
     assert args.text_height == 1.5
     assert args.text_margin == 2.0
     assert args.text_end_gap == 3.0
+    assert args.text_align == "right"
+    assert args.text_mode == "embedded"
+    assert args.text_depth == 0.8
     assert args.inner_size_percent == 65.0
-    assert args.font_file == Path("cli.otf")
+    assert args.font_family == "CLI Sans"
+    assert args.font_file is None
+    assert args.font_size == 5.0
+    assert args.font_weight == "bold"
+    assert args.font_style == "italic"
     assert args.base_stl == Path("cli.stl")
-    assert args.use_3mf is False
+    assert args.use_3mf is True
     assert args.max_size == 180.0
     assert args.terrain_height == 30.0
     assert args.base_height == 5.0
@@ -721,6 +754,126 @@ def test_settings_reject_invalid_text_end_gap(
     simple_gpx: Path, value: object
 ) -> None:
     parser = create_parser({"text_end_gap": value, "topo": False})
+    with pytest.raises(SystemExit):
+        config_from_args(parser.parse_args([str(simple_gpx)]), parser)
+
+
+def test_text_style_options_are_added_to_config(simple_gpx: Path) -> None:
+    parser = create_parser()
+    config = config_from_args(
+        parser.parse_args(
+            [
+                str(simple_gpx),
+                "--no-topo",
+                "--text",
+                "TRAIL",
+                "--font-family",
+                "DejaVu Sans",
+                "--font-size",
+                "4.5",
+                "--font-weight",
+                "bold",
+                "--font-style",
+                "italic",
+                "--text-align",
+                "right",
+            ]
+        ),
+        parser,
+    )
+    assert config.font_family == "DejaVu Sans"
+    assert config.font_size == 4.5
+    assert config.font_weight == "bold"
+    assert config.font_style == "italic"
+    assert config.text_align == "right"
+
+
+def test_embedded_text_requires_3mf_and_text(simple_gpx: Path) -> None:
+    parser = create_parser()
+    with pytest.raises(SystemExit):
+        config_from_args(
+            parser.parse_args(
+                [
+                    str(simple_gpx),
+                    "--no-topo",
+                    "--no-3mf",
+                    "--text",
+                    "TRAIL",
+                    "--text-mode",
+                    "embedded",
+                ]
+            ),
+            parser,
+        )
+    with pytest.raises(SystemExit):
+        config_from_args(
+            parser.parse_args(
+                [str(simple_gpx), "--no-topo", "--text-mode", "embedded"]
+            ),
+            parser,
+        )
+
+
+def test_generated_embedded_depth_must_fit_base(simple_gpx: Path) -> None:
+    parser = create_parser()
+    with pytest.raises(SystemExit):
+        config_from_args(
+            parser.parse_args(
+                [
+                    str(simple_gpx),
+                    "--no-topo",
+                    "--text",
+                    "TRAIL",
+                    "--text-mode",
+                    "embedded",
+                    "--text-depth",
+                    "2",
+                    "--base-height",
+                    "2",
+                ]
+            ),
+            parser,
+        )
+
+
+def test_font_file_rejects_family_variant_options(
+    simple_gpx: Path, tmp_path: Path
+) -> None:
+    font = tmp_path / "font.ttf"
+    font.touch()
+    parser = create_parser()
+    with pytest.raises(SystemExit):
+        config_from_args(
+            parser.parse_args(
+                [
+                    str(simple_gpx),
+                    "--no-topo",
+                    "--font-file",
+                    str(font),
+                    "--font-weight",
+                    "bold",
+                ]
+            ),
+            parser,
+        )
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("font_family", None),
+        ("font_size", "large"),
+        ("font_weight", []),
+        ("font_style", 1),
+        ("text_align", {}),
+        ("text_mode", False),
+        ("text_depth", "deep"),
+    ],
+)
+def test_settings_reject_invalid_text_style_types(
+    simple_gpx: Path, name: str, value: object
+) -> None:
+    parser = create_parser({name: value, "topo": False})
     with pytest.raises(SystemExit):
         config_from_args(parser.parse_args([str(simple_gpx)]), parser)
 

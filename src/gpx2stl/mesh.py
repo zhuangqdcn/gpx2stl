@@ -466,8 +466,21 @@ def _font_properties(config: Config) -> tuple[FontProperties, Path]:
         path = config.font_file
         properties = FontProperties(fname=str(path), size=1.0)
     else:
-        properties = FontProperties(family="DejaVu Sans", size=1.0)
-        path = Path(font_manager.findfont(properties, fallback_to_default=False))
+        requested = FontProperties(
+            family=config.font_family,
+            weight=config.font_weight,
+            style=config.font_style,
+            size=1.0,
+        )
+        try:
+            path = Path(font_manager.findfont(requested, fallback_to_default=False))
+        except ValueError as exc:
+            variant = f"{config.font_weight} {config.font_style}"
+            raise Gpx2StlError(
+                f"Unable to find installed font family '{config.font_family}' "
+                f"with {variant} style."
+            ) from exc
+        properties = FontProperties(fname=str(path), size=1.0)
     return properties, path
 
 
@@ -597,18 +610,18 @@ def _perimeter_text_layout(
         remaining = perimeter - seam_gap - float(np.sum(scaled_advances))
         if remaining < 0:
             return None
-        if len(core_text) == 1:
-            tracking = 0.0
-            cursor = seam_distance + seam_gap / 2.0 + remaining / 2.0
-        else:
-            tracking = remaining / (len(core_text) - 1)
-            cursor = seam_distance + seam_gap / 2.0
+        alignment_offset = {
+            "left": 0.0,
+            "center": remaining / 2.0,
+            "right": remaining,
+        }[config.text_align]
+        cursor = seam_distance + seam_gap / 2.0 + alignment_offset
         vertical_center = (float(bounds.ymin) + float(bounds.ymax)) * font_size / 2.0
         polygons: list[Polygon] = []
         glyph_distances: list[float] = []
         for character, advance in zip(core_text, scaled_advances):
             distance = (cursor + advance / 2.0) % perimeter
-            cursor += advance + tracking
+            cursor += advance
             if character.isspace():
                 continue
             location = centerline.interpolate(distance)
@@ -653,6 +666,17 @@ def _perimeter_text_layout(
             perimeter,
             tuple(glyph_distances),
         )
+
+    if config.font_size is not None:
+        requested_size = config.font_size / unit_height
+        placed = place(requested_size)
+        if placed is None:
+            raise Gpx2StlError(
+                f"The requested --font-size cannot fit the {description}; reduce "
+                "--font-size or --text-margin, shorten the text, increase the "
+                f"frame width ({fit_guidance}), or use a narrower font."
+            )
+        return placed
 
     placed: _PerimeterTextLayout | None = None
     lower = 0.0
@@ -743,6 +767,13 @@ def _generated_text_layout(config: Config, inner_radius: float) -> _PerimeterTex
 
 def _text_mesh(config: Config, inner_radius: float) -> trimesh.Trimesh:
     layout = _generated_text_layout(config, inner_radius)
+    if config.text_mode == "embedded":
+        return _extrude_text(
+            layout.polygons,
+            height=config.text_depth,
+            bottom=config.base_height - config.text_depth,
+            description="embedded text geometry",
+        )
     return _extrude_text(
         layout.polygons,
         height=config.text_height + 0.05,
@@ -811,12 +842,48 @@ def _custom_text_polygons(
 
 
 def _custom_text_mesh(config: Config, custom_base: CustomBase) -> trimesh.Trimesh:
+    if config.text_mode == "embedded":
+        thickness = custom_base.top_z - float(custom_base.mesh.bounds[0, 2])
+        if config.text_depth >= thickness:
+            raise Gpx2StlError(
+                "--text-depth must be smaller than the custom base thickness."
+            )
+        return _extrude_text(
+            _custom_text_polygons(config, custom_base),
+            height=config.text_depth,
+            bottom=custom_base.top_z - config.text_depth,
+            description="custom-base embedded text",
+        )
     return _extrude_text(
         _custom_text_polygons(config, custom_base),
         height=config.text_height + custom_base.overlap_depth,
         bottom=custom_base.top_z - custom_base.overlap_depth,
         description="custom-base text",
     )
+
+
+def _subtract_text_cavity(
+    base: trimesh.Trimesh,
+    text: trimesh.Trimesh,
+    top_z: float,
+) -> trimesh.Trimesh:
+    cavity = text.copy()
+    top = float(cavity.bounds[1, 2])
+    if not math.isclose(top, top_z, abs_tol=1e-7):
+        raise Gpx2StlError("Embedded text does not end at the base surface.")
+    cavity.vertices[cavity.vertices[:, 2] >= top - 1e-7, 2] = top_z + 0.05
+    try:
+        result = trimesh.boolean.difference(
+            [base, cavity],
+            engine="manifold",
+            check_volume=True,
+        )
+    except Exception as exc:
+        raise Gpx2StlError(f"Unable to cut the embedded text cavity: {exc}") from exc
+    if not isinstance(result, trimesh.Trimesh) or result.is_empty:
+        raise Gpx2StlError("Unable to cut the embedded text cavity from the base.")
+    result.remove_unreferenced_vertices()
+    return result
 
 
 def _add_side_faces(
@@ -997,6 +1064,8 @@ def build_geometry(
             if config.text is not None
             else None
         )
+        if text_mesh is not None and config.text_mode == "embedded":
+            base = _subtract_text_cavity(base, text_mesh, custom_base.top_z)
     else:
         base = _convex_prism(
             _model_outline(config.shape, config.max_size),
@@ -1050,6 +1119,8 @@ def build_geometry(
             if config.text is not None
             else None
         )
+        if text_mesh is not None and config.text_mode == "embedded":
+            base = _subtract_text_cavity(base, text_mesh, config.base_height)
     route_mesh = _route_mesh(
         route,
         transform,

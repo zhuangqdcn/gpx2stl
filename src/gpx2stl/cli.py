@@ -28,8 +28,15 @@ SETTING_KEYS = {
     "text_height",
     "text_margin",
     "text_end_gap",
+    "text_align",
+    "text_mode",
+    "text_depth",
     "inner_size_percent",
+    "font_family",
     "font_file",
+    "font_size",
+    "font_weight",
+    "font_style",
     "base_stl",
     "use_3mf",
     "max_size",
@@ -221,15 +228,56 @@ def create_parser(settings: dict[str, Any] | None = None) -> argparse.ArgumentPa
         help="extra bottom seam gap between text ends in mm (default: 0)",
     )
     parser.add_argument(
+        "--text-align",
+        choices=("left", "center", "right"),
+        default="center",
+        help="compact text-run alignment relative to the bottom seam (default: center)",
+    )
+    parser.add_argument(
+        "--text-mode",
+        choices=("raised", "embedded"),
+        default="raised",
+        help="raised text or a flush 3MF inlay (default: raised)",
+    )
+    parser.add_argument(
+        "--text-depth",
+        type=_positive,
+        default=0.6,
+        help="embedded text depth in mm (default: 0.6)",
+    )
+    parser.add_argument(
         "--inner-size-percent",
         type=_percentage_below_100,
         default=70.0,
         help="terrain circle diameter as a percentage of model width (default: 70)",
     )
     parser.add_argument(
+        "--font-family",
+        default="DejaVu Sans",
+        help="installed font family for text (default: DejaVu Sans)",
+    )
+    parser.add_argument(
         "--font-file",
         type=Path,
         help="custom .ttf, .otf, or .ttc font for text glyphs",
+    )
+    parser.add_argument(
+        "--font-size",
+        type=_positive,
+        default=None,
+        help="glyph height in mm (default: automatically fit)",
+    )
+    parser.add_argument(
+        "--font-weight",
+        choices=("normal", "bold"),
+        default="normal",
+        help="font weight (default: normal)",
+    )
+    parser.add_argument(
+        "--font-style",
+        choices=("normal", "italic"),
+        default="normal",
+        help="font style (default: normal)",
     )
     parser.add_argument(
         "--base-stl",
@@ -313,6 +361,8 @@ def config_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser) 
     font_file = Path(args.font_file).resolve() if args.font_file else None
     base_stl = Path(args.base_stl).resolve() if args.base_stl else None
     text = args.text
+    if not args.font_family.strip():
+        parser.error("--font-family must contain a non-whitespace name")
     if args.text is not None:
         if not text.strip():
             parser.error("--text must contain at least one non-whitespace character")
@@ -323,6 +373,22 @@ def config_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser) 
             parser.error(f"font file does not exist or is not a file: {font_file}")
         if font_file.suffix.lower() not in {".ttf", ".otf", ".ttc"}:
             parser.error("--font-file must use the .ttf, .otf, or .ttc extension")
+        if (
+            args.font_family != "DejaVu Sans"
+            or args.font_weight != "normal"
+            or args.font_style != "normal"
+        ):
+            parser.error(
+                "--font-file cannot be combined with --font-family, "
+                "--font-weight, or --font-style"
+            )
+    if args.text_mode == "embedded":
+        if text is None:
+            parser.error("--text-mode embedded requires --text")
+        if not args.use_3mf:
+            parser.error("--text-mode embedded requires 3MF output")
+        if base_stl is None and args.text_depth >= args.base_height:
+            parser.error("--text-depth must be smaller than --base-height")
     if base_stl is not None:
         if not base_stl.is_file():
             parser.error(f"base STL does not exist or is not a file: {base_stl}")
@@ -377,8 +443,15 @@ def config_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser) 
         text_height=args.text_height,
         text_margin=args.text_margin,
         text_end_gap=args.text_end_gap,
+        text_align=args.text_align,
+        text_mode=args.text_mode,
+        text_depth=args.text_depth,
         inner_size_percent=args.inner_size_percent,
+        font_family=args.font_family,
         font_file=font_file,
+        font_size=args.font_size,
+        font_weight=args.font_weight,
+        font_style=args.font_style,
         base_stl=base_stl,
         use_3mf=args.use_3mf,
         max_size=args.max_size,
@@ -485,6 +558,7 @@ def _validate_setting_types(
         "route_height",
         "boundary_percent",
         "text_height",
+        "text_depth",
         "inner_size_percent",
         "max_size",
         "base_height",
@@ -504,6 +578,15 @@ def _validate_setting_types(
         parser.error("--boundary-percent must be greater than or equal to zero")
     if args.text_height <= 0:
         parser.error("--text-height must be greater than zero")
+    if args.text_depth <= 0:
+        parser.error("--text-depth must be greater than zero")
+    if args.font_size is not None:
+        if isinstance(args.font_size, bool) or not isinstance(
+            args.font_size, (int, float)
+        ):
+            parser.error("settings file value 'font_size' must be a number or null")
+        if not math.isfinite(args.font_size) or args.font_size <= 0:
+            parser.error("--font-size must be a finite number greater than zero")
     if args.text_margin is not None:
         if isinstance(args.text_margin, bool) or not isinstance(
             args.text_margin, (int, float)
@@ -530,9 +613,34 @@ def _validate_setting_types(
             parser.error("--terrain-height must be a finite number greater than zero")
     if args.max_size <= 0 or args.base_height <= 0:
         parser.error("model dimensions must be greater than zero")
+    for name in (
+        "font_family",
+        "text_align",
+        "text_mode",
+        "font_weight",
+        "font_style",
+    ):
+        if not isinstance(getattr(args, name), str):
+            parser.error(f"settings file value '{name}' must be a string")
     if args.shape not in {"square", "circle", "hex"}:
         parser.error(
             "settings file value 'shape' must be 'square', 'circle', or 'hex'"
+        )
+    if args.text_align not in {"left", "center", "right"}:
+        parser.error(
+            "settings file value 'text_align' must be 'left', 'center', or 'right'"
+        )
+    if args.text_mode not in {"raised", "embedded"}:
+        parser.error(
+            "settings file value 'text_mode' must be 'raised' or 'embedded'"
+        )
+    if args.font_weight not in {"normal", "bold"}:
+        parser.error(
+            "settings file value 'font_weight' must be 'normal' or 'bold'"
+        )
+    if args.font_style not in {"normal", "italic"}:
+        parser.error(
+            "settings file value 'font_style' must be 'normal' or 'italic'"
         )
     if args.topo_source not in {"auto", "online", "local"}:
         parser.error(

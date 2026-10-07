@@ -8,7 +8,7 @@ Convert GPX tracks/routes and Garmin FIT activities into printable terrain model
 - **File or folder input:** convert one `.gpx`/`.fit` file or every supported activity file directly in a folder; files remain separate models.
 - **Square, circular, or hexagonal base:** automatically sized around every path in each input activity.
 - **Custom STL base:** preserve an existing model and use its highest flat top as the exact terrain shape.
-- **Optional perimeter text:** place terrain in a centered inset and wrap raised text around the full flat outer frame.
+- **Styled perimeter text:** choose font family, size, weight, style, and alignment, then print it raised or as a flush 3MF inlay.
 
 [中文说明](#中文说明)
 
@@ -54,7 +54,7 @@ Copy `settings.example.json` beside your activity files as `.gpx2stl.settings.js
 cp settings.example.json /path/to/activities/.gpx2stl.settings.json
 ```
 
-JSON keys use the Python/long-option names with underscores, such as `route_width`, `boundary_percent`, `text_margin`, `text_end_gap`, `inner_size_percent`, `topo_source`, and `topo_dir`. The positional `.gpx`/`.fit` file-or-directory input can also be defaulted with the backward-compatible `gpx_file` key. Use `use_3mf` for the `--3mf` / `--no-3mf` setting. Relative `font_file` paths are resolved from the settings file like other paths. Unknown keys, invalid JSON, or incorrect value types produce an explicit error. `.gpx2stl.settings.json` is ignored by Git; `settings.example.json` is tracked as a complete template.
+JSON keys use the Python/long-option names with underscores, such as `route_width`, `boundary_percent`, `text_align`, `text_mode`, `text_depth`, `font_family`, `font_size`, `font_weight`, `font_style`, `inner_size_percent`, `topo_source`, and `topo_dir`. The positional `.gpx`/`.fit` file-or-directory input can also be defaulted with the backward-compatible `gpx_file` key. Use `use_3mf` for the `--3mf` / `--no-3mf` setting. Relative `font_file` paths are resolved from the settings file like other paths. Unknown keys, invalid JSON, or incorrect value types produce an explicit error. `.gpx2stl.settings.json` is ignored by Git; `settings.example.json` is tracked as a complete template.
 
 For terrain paths shared between Windows and Linux/WSL, settings support `topo_file_windows`, `topo_file_linux`, `topo_dir_windows`, and `topo_dir_linux`. A non-null key matching the current OS overrides the corresponding generic `topo_file` or `topo_dir`. A null or absent OS-specific key falls back to the generic value. Paths for the inactive OS are not interpreted or resolved.
 
@@ -138,6 +138,12 @@ python -m gpx2stl route.gpx --text "  MOUNT RAINIER  " --text-end-gap 3
 # Use a custom font for Chinese or another script
 python -m gpx2stl route.gpx --text "路线" --font-file ./fonts/NotoSansCJK-Regular.ttc
 
+# Use an installed bold italic font at a fixed glyph height, aligned from the seam
+python -m gpx2stl route.gpx --text "RIDGELINE" --font-family Arial --font-weight bold --font-style italic --font-size 5 --text-align left
+
+# Create a separate blue text inlay, flush with the 3MF base surface and 0.8 mm deep
+python -m gpx2stl route.gpx --text "RIDGELINE" --text-mode embedded --text-depth 0.8
+
 # Preserve an existing STL base and use its flat top
 python -m gpx2stl route.gpx --base-stl ./base.stl --boundary-percent 10
 
@@ -172,12 +178,19 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 | `--topo`, `--no-topo` | topo | Enable or disable terrain. |
 | `--boundary-percent` | `10` | Padding added around the minimum selected footprint. |
 | `--shape` | `square` | `square`, `circle`, or flat-top `hex`. Squares remain north-up. |
-| `--text` | none | Raised text wrapped once around the complete flat frame, with its head/tail seam centered at the bottom. |
+| `--text` | none | Text placed as one compact run along the flat frame, with its reserved seam centered at the bottom. |
 | `--text-height` | `1` mm | Raised text thickness above the frame. |
 | `--text-margin` | automatic | Minimum clearance in millimeters between glyph outlines and both boundaries of the flat text frame. |
 | `--text-end-gap` | `0` mm | Extra bottom seam gap added to the default eight font spaces and any leading/trailing spaces in `--text`. |
+| `--text-align` | `center` | Align the compact text run `left`, `center`, or `right` within the usable perimeter measured from the bottom seam. |
+| `--text-mode` | `raised` | Use `raised` text or an `embedded` flush inlay. Embedded text requires 3MF output. |
+| `--text-depth` | `0.6` mm | Depth of the cavity and flush text inlay in embedded mode. |
 | `--inner-size-percent` | `70` | Terrain inset diameter as a percentage of the outer model width; must be above 0 and below 100. |
-| `--font-file` | built-in | Custom `.ttf`, `.otf`, or `.ttc` font for scripts not covered by the built-in font. |
+| `--font-family` | `DejaVu Sans` | Installed font family used for text. |
+| `--font-file` | none | Exact custom `.ttf`, `.otf`, or `.ttc` face for scripts not covered by an installed font; cannot be combined with family/weight/style options. |
+| `--font-size` | automatic | Requested glyph height in millimeters; omitted text is automatically fitted. |
+| `--font-weight` | `normal` | Installed-family variant: `normal` or `bold`. |
+| `--font-style` | `normal` | Installed-family variant: `normal` or `italic`. |
 | `--base-stl` | none | Existing millimeter-scale, Z-up STL whose highest flat top becomes the custom terrain shape. |
 | `--3mf`, `--no-3mf` | 3MF | Select multi-material 3MF or single-mesh STL. |
 | `--max-size` | `200` mm | Maximum final X/Y dimension. |
@@ -200,7 +213,8 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 - Square output is the smallest north-up square around the route before padding. Circle output uses the true minimum enclosing circle. Hex output uses the minimum translated flat-top regular hexagon.
 - When `--text` is present, `--max-size` controls the outer square, circle, or hex frame. Terrain and route are instead scaled into a centered circle controlled by `--inner-size-percent`; the rest of the frame stays flat at the base-top height.
 - In 3MF output, the generated prism or supplied custom STL remains a separate `Base` object. Enabled relief is a separately watertight `Topography` object with a small intentional overlap into the base for reliable slicing. Disabling topo omits that object.
-- Text uses the built-in DejaVu Sans font for Latin letters, digits, and punctuation. Characters wrap once around the full frame, remain tangent to its perimeter, and are automatically reduced to fit. The head/tail seam is centered at the bottom and reserves eight font spaces by default. `--text-end-gap` adds an absolute millimeter gap, while quoted leading/trailing spaces add font-relative gap. Use `--text-margin` to reserve clearance from the inner and outer frame boundaries. Use `--font-file` for Chinese or other scripts; missing glyphs are reported as errors.
+- Text defaults to DejaVu Sans and is placed as a compact tangent run on the perimeter. `--text-align` positions that run in the usable perimeter after the bottom seam; it does not stretch inter-character spacing. Text is automatically fitted unless `--font-size` requests a glyph height. Select an installed family and variant with `--font-family`, `--font-weight`, and `--font-style`, or use `--font-file` to select one exact face. The bottom seam reserves eight font spaces by default; `--text-end-gap` adds an absolute gap and quoted leading/trailing spaces add font-relative gap. Missing fonts, variants, or glyphs are reported explicitly.
+- Raised text overlaps the base slightly for reliable slicing and is unioned into STL output. In 3MF-only embedded mode, a cavity is cut into the base and the separate text-material object fills it to a flush top surface; `--text-depth` controls the inlay depth.
 - In STL output, raised text is unioned with the frame, route, and terrain into one watertight mesh.
 - Routes crossing the ±180° antimeridian are supported by split DEM requests.
 
@@ -218,7 +232,7 @@ offset distance = boundary-percent / 100 × min(top width, top height)
 
 The GPX remains north-up, is centered on the usable inset, and receives the largest uniform scale whose complete route-width ribbon fits inside the region without crossing concave edges or holes. The custom STL itself is never resized by `--max-size`. DEM bounds are derived from this fitted custom region.
 
-When `--text` is supplied, the largest fitting glyph height is selected and the text wraps once around the full remaining flat border. Characters stay tangent to the continuous perimeter path, and extra path length is distributed between characters. The head/tail seam remains centered at the bottom and reserves eight font spaces plus `--text-end-gap` and any quoted leading/trailing spaces. `--text-margin` reserves the requested minimum clearance in millimeters from both the outer shape boundary and the inner terrain boundary. Every glyph must fit entirely in the remaining area. Increase `--boundary-percent`, reduce the text margins/gap, shorten the text, or choose a narrower font if the border cannot contain it.
+When `--text` is supplied, the largest fitting glyph height is selected unless `--font-size` is set. The compact run stays tangent to the continuous perimeter and follows `--text-align`. The head/tail seam remains centered at the bottom and reserves eight font spaces plus `--text-end-gap` and any quoted leading/trailing spaces. `--text-margin` reserves the requested minimum clearance in millimeters from both the outer shape boundary and the inner terrain boundary. Every glyph must fit entirely in the remaining area. Increase `--boundary-percent`, reduce the font size, margins, or gap, shorten the text, or choose a narrower font if the border cannot contain it.
 
 ## Topography source behavior
 
@@ -274,7 +288,7 @@ This project is licensed under the [MIT License](LICENSE). Terrain datasets rema
 - **文件或目录输入：**可转换一个 `.gpx`/`.fit` 文件，或目录中直接包含的所有受支持活动文件；不同文件始终生成独立模型。
 - **方形、圆形或六边形底座：**根据每个输入活动中的全部路径自动确定范围。
 - **自定义 STL 底座：**保留现有模型，并将其最高的平坦顶面作为精确地形外形。
-- **可选全周文字：**将地形放入居中的区域，并让凸起文字沿完整平坦外框环绕。
+- **可设置样式的周边文字：**可选择字体族、字高、粗细、样式和对齐方式，并打印为凸起文字或齐平的 3MF 嵌件。
 
 ## 环境要求
 
@@ -402,6 +416,12 @@ python -m gpx2stl route.gpx --text "  MOUNT RAINIER  " --text-end-gap 3
 # 中文或其他文字使用自定义字体
 python -m gpx2stl route.gpx --text "路线" --font-file ./fonts/NotoSansCJK-Regular.ttc
 
+# 使用已安装的粗斜体、固定字高，并从接缝左对齐
+python -m gpx2stl route.gpx --text "RIDGELINE" --font-family Arial --font-weight bold --font-style italic --font-size 5 --text-align left
+
+# 创建与 3MF 底座表面齐平、深 0.8 mm 的独立文字嵌件
+python -m gpx2stl route.gpx --text "RIDGELINE" --text-mode embedded --text-depth 0.8
+
 # 保留现有 STL 底座并使用其平坦顶面
 python -m gpx2stl route.gpx --base-stl ./base.stl --boundary-percent 10
 
@@ -436,12 +456,19 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 | `--topo`, `--no-topo` | 启用 | 启用或禁用地形。 |
 | `--boundary-percent` | `10` | 在所选最小外形周围增加的边界百分比。 |
 | `--shape` | `square` | `square`（方形）、`circle`（圆形）或平顶 `hex`（正六边形）；方形保持正北朝上。 |
-| `--text` | 无 | 沿完整平坦外框环绕一周的凸起文字；文字首尾接缝位于底部中央。 |
+| `--text` | 无 | 沿平坦外框放置的紧凑文字段；预留接缝位于底部中央。 |
 | `--text-height` | `1` mm | 文字高出外框的厚度。 |
 | `--text-margin` | 自动 | 字形轮廓与平坦文字边框内外两侧边界之间的最小间距，单位为毫米。 |
 | `--text-end-gap` | `0` mm | 在默认八个字体空格及 `--text` 首尾空格之外，额外增加的底部接缝间距。 |
+| `--text-align` | `center` | 相对底部接缝在可用周长内将紧凑文字段设为 `left`、`center` 或 `right`。 |
+| `--text-mode` | `raised` | 使用 `raised` 凸起文字或 `embedded` 齐平嵌件；嵌入模式仅支持 3MF。 |
+| `--text-depth` | `0.6` mm | 嵌入模式中文字凹槽和齐平嵌件的深度。 |
 | `--inner-size-percent` | `70` | 圆形地形区域直径占模型外宽的百分比；必须大于 0 且小于 100。 |
-| `--font-file` | 内置字体 | 为内置字体未覆盖的文字系统指定自定义 `.ttf`、`.otf` 或 `.ttc` 字体。 |
+| `--font-family` | `DejaVu Sans` | 用于文字的已安装字体族。 |
+| `--font-file` | 无 | 精确指定自定义 `.ttf`、`.otf` 或 `.ttc` 字体文件；不可与字体族、粗细或样式选项组合。 |
+| `--font-size` | 自动 | 字形高度（毫米）；省略时自动适配。 |
+| `--font-weight` | `normal` | 已安装字体族的 `normal` 或 `bold` 变体。 |
+| `--font-style` | `normal` | 已安装字体族的 `normal` 或 `italic` 变体。 |
 | `--base-stl` | 无 | 使用毫米单位、Z 轴朝上的现有 STL；其最高平坦顶面成为自定义地形外形。 |
 | `--3mf`, `--no-3mf` | 3MF | 选择多材料 3MF 或单网格 STL。 |
 | `--max-size` | `200` mm | 最终模型 X/Y 最大尺寸。 |
@@ -464,8 +491,8 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 - 方形为加边界前包围路线的最小正北方形；圆形为真实最小包围圆；六边形为可平移的最小平顶正六边形。
 - 指定 `--text` 后，`--max-size` 控制方形、圆形或六边形外框尺寸。地形和路线会缩放到由 `--inner-size-percent` 控制的居中圆形区域，其余外框保持在底座顶面的平坦高度。
 - 在 3MF 输出中，生成的棱柱或提供的自定义 STL 会保留为独立的 `Base` 对象。启用的起伏地形是另一个独立水密的 `Topography` 对象，并略微伸入底座以确保切片可靠。禁用地形时不会生成该对象。
-- 拉丁字母、数字和标点默认使用内置 DejaVu Sans 字体。字符沿完整外框环绕一周，与边框路径相切并自动缩小以适应空间。文字首尾接缝固定在底部中央，默认保留八个字体空格。`--text-end-gap` 可增加绝对毫米间距，用引号保留的首尾空格会增加随字体缩放的间距。可用 `--text-margin` 保留文字与内外边框之间的间距。中文或其他文字请使用 `--font-file`；字体缺少字形时会明确报错。
-- 输出 STL 时，凸起文字会与外框、路线和地形合并为一个水密网格。
+- 文字默认使用 DejaVu Sans，并沿周长切线方向形成紧凑文字段。`--text-align` 相对底部接缝定位文字段，不会拉伸字符间距。省略 `--font-size` 时自动适配字高；可用字体族、粗细和样式选项选择已安装变体，或用 `--font-file` 精确指定一个字体文件。缺少字体、变体或字形时会明确报错。
+- 凸起文字会略微伸入底座，并在 STL 输出中与其他部分合并。仅限 3MF 的嵌入模式会在底座切出凹槽，并以独立文字材料对象填充至表面齐平；`--text-depth` 控制嵌件深度。
 - 支持跨越 ±180° 日期变更线的路线；此时会拆分 DEM 请求。
 
 ### 自定义 STL 底座
@@ -482,7 +509,7 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 
 GPX 保持正北朝上，以可用内缩区域为中心，并采用能使完整路线宽度带位于区域内、不穿过凹边或孔洞的最大等比例缩放。自定义 STL 本身绝不会被 `--max-size` 缩放。DEM 请求范围根据拟合后的自定义区域计算。
 
-指定 `--text` 后，程序会选择可容纳的最大字高，让文字沿剩余的完整平坦边框环绕一周。每个字符都与连续的边框路径相切，多余路径长度会分配到字符之间。文字首尾接缝固定在底部中央，并保留八个字体空格、`--text-end-gap` 以及引号内首尾空格的总间距。`--text-margin` 可指定文字与外侧形状边界及内侧地形边界之间的最小毫米间距。每个字形都必须完整位于剩余区域内。如果空间不足，请增大 `--boundary-percent`、减小文字边距或接缝、缩短文字或选择更窄的字体。
+指定 `--text` 后，除非设置 `--font-size`，程序会选择可容纳的最大字高。紧凑文字段与连续边框路径相切，并遵循 `--text-align`。文字首尾接缝固定在底部中央，并保留八个字体空格、`--text-end-gap` 以及引号内首尾空格的总间距。`--text-margin` 可指定文字与外侧形状边界及内侧地形边界之间的最小毫米间距。每个字形都必须完整位于剩余区域内。如果空间不足，请增大 `--boundary-percent`，减小字高、文字边距或接缝，缩短文字或选择更窄的字体。
 
 ## 地形数据源规则
 

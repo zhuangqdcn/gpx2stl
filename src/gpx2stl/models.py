@@ -10,6 +10,10 @@ from pyproj import Transformer
 
 Shape = Literal["square", "circle", "hex"]
 TopoSource = Literal["auto", "online", "local"]
+FontWeight = Literal["normal", "bold"]
+FontStyle = Literal["normal", "italic"]
+TextAlign = Literal["left", "center", "right"]
+TextMode = Literal["raised", "embedded"]
 
 
 @dataclass(frozen=True)
@@ -25,8 +29,15 @@ class Config:
     text_height: float = 1.0
     text_margin: float | None = None
     text_end_gap: float = 0.0
+    text_align: TextAlign = "center"
+    text_mode: TextMode = "raised"
+    text_depth: float = 0.6
     inner_size_percent: float = 70.0
+    font_family: str = "DejaVu Sans"
     font_file: Path | None = None
+    font_size: float | None = None
+    font_weight: FontWeight = "normal"
+    font_style: FontStyle = "normal"
     base_stl: Path | None = None
     use_3mf: bool = True
     max_size: float = 200.0

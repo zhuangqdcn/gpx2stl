@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import lib3mf
@@ -7,6 +8,7 @@ import numpy as np
 import pytest
 import trimesh
 from matplotlib.textpath import TextToPath
+from matplotlib.textpath import TextPath
 
 from gpx2stl.errors import Gpx2StlError
 from gpx2stl.export import export_geometry
@@ -104,6 +106,10 @@ def _text_geometry(
     text: str = "TRAIL O",
     text_margin: float | None = None,
     text_end_gap: float = 0.0,
+    text_align: str = "center",
+    text_mode: str = "raised",
+    text_depth: float = 0.6,
+    font_size: float | None = None,
 ):
     paths = tuple(interpolate_elevations(path) for path in read_gpx(simple_gpx))
     route = project_paths(paths)
@@ -120,7 +126,11 @@ def _text_geometry(
         text_height=1.0,
         text_margin=text_margin,
         text_end_gap=text_end_gap,
+        text_align=text_align,
+        text_mode=text_mode,
+        text_depth=text_depth,
         inner_size_percent=70.0,
+        font_size=font_size,
         use_3mf=use_3mf,
         max_size=20.0,
         route_width=1.0,
@@ -149,7 +159,7 @@ def test_text_layout_has_watertight_frame_route_and_text(
 
 
 @pytest.mark.parametrize("shape", ["square", "circle", "hex"])
-def test_generated_text_wraps_full_perimeter_with_bottom_seam(
+def test_generated_text_uses_compact_run_with_bottom_seam(
     simple_gpx: Path, tmp_path: Path, shape: Shape
 ) -> None:
     _, config = _text_geometry(
@@ -159,18 +169,70 @@ def test_generated_text_wraps_full_perimeter_with_bottom_seam(
         shape=shape,
     )
     layout = _generated_text_layout(config, 7.0)
-    bounds = np.asarray(
-        [
-            min(polygon.bounds[0] for polygon in layout.polygons),
-            min(polygon.bounds[1] for polygon in layout.polygons),
-            max(polygon.bounds[2] for polygon in layout.polygons),
-            max(polygon.bounds[3] for polygon in layout.polygons),
-        ]
-    )
-    assert np.ptp(bounds[[0, 2]]) > config.max_size * 0.6
-    assert np.ptp(bounds[[1, 3]]) > config.max_size * 0.6
+    gaps = np.diff(np.asarray(layout.glyph_distances))
+    assert np.max(gaps) < layout.perimeter / 4.0
     assert layout.seam_point[0] == pytest.approx(0.0, abs=1e-6)
     assert layout.seam_point[1] < 0.0
+
+
+def test_text_alignment_positions_compact_run_relative_to_seam(
+    simple_gpx: Path, tmp_path: Path
+) -> None:
+    _, config = _text_geometry(
+        simple_gpx,
+        tmp_path / "unused.3mf",
+        True,
+        shape="circle",
+    )
+    first_offsets = []
+    for alignment in ("left", "center", "right"):
+        layout = _generated_text_layout(replace(config, text_align=alignment), 7.0)
+        first_offsets.append(
+            (layout.glyph_distances[0] - layout.seam_distance) % layout.perimeter
+        )
+    assert first_offsets[0] < first_offsets[1] < first_offsets[2]
+
+
+def test_explicit_font_size_sets_glyph_height(
+    simple_gpx: Path, tmp_path: Path
+) -> None:
+    _, config = _text_geometry(
+        simple_gpx,
+        tmp_path / "unused.3mf",
+        True,
+        shape="circle",
+        font_size=1.25,
+    )
+    layout = _generated_text_layout(config, 7.0)
+    properties, _ = _font_properties(config)
+    unit_height = TextPath(
+        (0.0, 0.0),
+        config.text.strip(),
+        size=1.0,
+        prop=properties,
+    ).get_extents().height
+    assert layout.font_size * unit_height == pytest.approx(1.25)
+
+
+def test_installed_bold_italic_font_variant_resolves(
+    simple_gpx: Path, tmp_path: Path
+) -> None:
+    _, config = _text_geometry(simple_gpx, tmp_path / "unused.3mf", True)
+    properties, path = _font_properties(
+        replace(config, font_weight="bold", font_style="italic")
+    )
+    assert path.is_file()
+    assert properties.get_file() == str(path)
+
+
+def test_missing_font_family_is_reported(
+    simple_gpx: Path, tmp_path: Path
+) -> None:
+    _, config = _text_geometry(simple_gpx, tmp_path / "unused.3mf", True)
+    with pytest.raises(Gpx2StlError, match="Unable to find installed font family"):
+        _font_properties(
+            replace(config, font_family="Definitely Missing Font Family 12345")
+        )
 
 
 def test_text_seam_combines_default_spaces_edge_spaces_and_millimeters(
@@ -234,6 +296,43 @@ def test_text_margin_reports_when_frame_is_too_narrow(
             shape="circle",
             text_margin=1.5,
         )
+
+
+def test_embedded_text_is_flush_and_replaces_base_volume(
+    simple_gpx: Path, tmp_path: Path
+) -> None:
+    geometry, config = _text_geometry(
+        simple_gpx,
+        tmp_path / "embedded.3mf",
+        True,
+        shape="circle",
+        text_mode="embedded",
+        text_depth=0.6,
+    )
+    assert geometry.text is not None
+    assert geometry.base.is_watertight
+    assert geometry.text.is_watertight
+    assert geometry.text.bounds[1, 2] == pytest.approx(config.base_height)
+    assert geometry.text.bounds[0, 2] == pytest.approx(
+        config.base_height - config.text_depth
+    )
+    raised_geometry, _ = _text_geometry(
+        simple_gpx,
+        tmp_path / "raised.3mf",
+        True,
+        shape="circle",
+    )
+    full_base_volume = raised_geometry.base.volume
+    assert geometry.base.volume < full_base_volume
+    assert geometry.base.volume + geometry.text.volume == pytest.approx(
+        full_base_volume,
+        rel=1e-5,
+    )
+    export_geometry(geometry, config)
+    wrapper = lib3mf.get_wrapper()
+    model = wrapper.CreateModel()
+    model.QueryReader("3mf").ReadFromFile(str(config.output))
+    assert _mesh_names(model) == {"Base", "GPX route", "Text"}
 
 
 def test_missing_default_font_glyph_is_reported(
