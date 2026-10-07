@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 settings.json
+.gpx2stl.settings.json
 
 # Python environments and caches
 /.venv/

@@ -41,6 +41,7 @@ SETTING_KEYS = {
     "api_key",
     "force",
 }
+SETTINGS_FILENAME = ".gpx2stl.settings.json"
 
 
 def _positive(value: str) -> float:
@@ -67,7 +68,7 @@ def _percentage_below_100(value: str) -> float:
 def find_settings(start: Path | None = None) -> Path | None:
     directory = (start or Path.cwd()).resolve()
     for candidate_dir in (directory, *directory.parents):
-        candidate = candidate_dir / "settings.json"
+        candidate = candidate_dir / SETTINGS_FILENAME
         if candidate.is_file():
             return candidate
     return None
@@ -120,6 +121,11 @@ def create_parser(settings: dict[str, Any] | None = None) -> argparse.ArgumentPa
         nargs="?",
         type=Path,
         help="input .gpx/.fit file or directory containing activity files",
+    )
+    parser.add_argument(
+        "--settings",
+        type=Path,
+        help=f"settings file path (default: discover {SETTINGS_FILENAME})",
     )
     parser.add_argument(
         "-o",
@@ -244,7 +250,9 @@ def create_parser(settings: dict[str, Any] | None = None) -> argparse.ArgumentPa
 
 def config_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser) -> Config:
     if args.gpx_file is None:
-        parser.error("gpx_file is required as an argument or settings.json value")
+        parser.error(
+            f"input_path is required as an argument or {SETTINGS_FILENAME} value"
+        )
     _validate_setting_types(args, parser)
     gpx_file = Path(args.gpx_file).resolve()
     if not gpx_file.is_file():
@@ -349,7 +357,9 @@ def configs_from_args(
     args: argparse.Namespace, parser: argparse.ArgumentParser
 ) -> tuple[Config, ...]:
     if args.gpx_file is None:
-        parser.error("gpx_file is required as an argument or settings.json value")
+        parser.error(
+            f"input_path is required as an argument or {SETTINGS_FILENAME} value"
+        )
     _validate_setting_types(args, parser)
     activity_input = Path(args.gpx_file).resolve()
     if not activity_input.exists():
@@ -429,7 +439,7 @@ def _validate_setting_types(
     ):
         value = getattr(args, name)
         if value is not None and not isinstance(value, (str, Path)):
-            parser.error(f"settings.json value '{name}' must be a path string or null")
+            parser.error(f"settings file value '{name}' must be a path string or null")
     numeric = (
         "route_width",
         "route_height",
@@ -442,12 +452,12 @@ def _validate_setting_types(
     for name in numeric:
         value = getattr(args, name)
         if isinstance(value, bool) or not isinstance(value, (int, float)):
-            parser.error(f"settings.json value '{name}' must be a number")
+            parser.error(f"settings file value '{name}' must be a number")
         if not math.isfinite(value):
-            parser.error(f"settings.json value '{name}' must be finite")
+            parser.error(f"settings file value '{name}' must be finite")
     for name in ("topo", "use_3mf", "force"):
         if not isinstance(getattr(args, name), bool):
-            parser.error(f"settings.json value '{name}' must be true or false")
+            parser.error(f"settings file value '{name}' must be true or false")
     if args.route_width <= 0 or args.route_height <= 0:
         parser.error("route dimensions must be greater than zero")
     if args.boundary_percent < 0:
@@ -458,13 +468,13 @@ def _validate_setting_types(
         if isinstance(args.text_margin, bool) or not isinstance(
             args.text_margin, (int, float)
         ):
-            parser.error("settings.json value 'text_margin' must be a number or null")
+            parser.error("settings file value 'text_margin' must be a number or null")
         if not math.isfinite(args.text_margin) or args.text_margin < 0:
             parser.error("--text-margin must be a finite number greater than or equal to zero")
     if isinstance(args.text_end_gap, bool) or not isinstance(
         args.text_end_gap, (int, float)
     ):
-        parser.error("settings.json value 'text_end_gap' must be a number")
+        parser.error("settings file value 'text_end_gap' must be a number")
     if not math.isfinite(args.text_end_gap) or args.text_end_gap < 0:
         parser.error(
             "--text-end-gap must be a finite number greater than or equal to zero"
@@ -475,21 +485,30 @@ def _validate_setting_types(
         if isinstance(args.terrain_height, bool) or not isinstance(
             args.terrain_height, (int, float)
         ):
-            parser.error("settings.json value 'terrain_height' must be a number or null")
+            parser.error("settings file value 'terrain_height' must be a number or null")
         if not math.isfinite(args.terrain_height) or args.terrain_height <= 0:
             parser.error("--terrain-height must be a finite number greater than zero")
     if args.max_size <= 0 or args.base_height <= 0:
         parser.error("model dimensions must be greater than zero")
     if args.shape not in {"square", "circle", "hex"}:
-        parser.error("settings.json value 'shape' must be 'square', 'circle', or 'hex'")
+        parser.error(
+            "settings file value 'shape' must be 'square', 'circle', or 'hex'"
+        )
     if args.topo_source not in {"auto", "online", "local"}:
         parser.error(
-            "settings.json value 'topo_source' must be 'auto', 'online', or 'local'"
+            "settings file value 'topo_source' must be 'auto', 'online', or 'local'"
         )
     for name in ("text", "dem_type", "api_key"):
         value = getattr(args, name)
         if value is not None and not isinstance(value, str):
-            parser.error(f"settings.json value '{name}' must be a string or null")
+            parser.error(f"settings file value '{name}' must be a string or null")
+
+
+def _settings_search_start(input_path: Path | None) -> Path:
+    if input_path is None:
+        return Path.cwd()
+    resolved = Path(input_path).resolve()
+    return resolved if resolved.is_dir() else resolved.parent
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -498,7 +517,13 @@ def main(argv: list[str] | None = None) -> None:
         load_dotenv(dotenv_path, override=False)
     parser = create_parser()
     try:
-        settings = load_settings(find_settings())
+        initial_args = parser.parse_args(argv)
+        settings_path = (
+            Path(initial_args.settings).resolve()
+            if initial_args.settings is not None
+            else find_settings(_settings_search_start(initial_args.gpx_file))
+        )
+        settings = load_settings(settings_path)
         parser = create_parser(settings)
         configs = configs_from_args(parser.parse_args(argv), parser)
         for config in configs:

@@ -46,15 +46,20 @@ The command searches for `.env` from the current directory upward. An existing p
 
 ## Settings file
 
-At startup, the command searches from the current directory upward for `settings.json`. Values in that file become defaults; explicit command-line arguments override them. Relative paths are resolved from the directory containing `settings.json`.
+At startup, the command searches from the input file’s directory (or the input directory itself) upward for `.gpx2stl.settings.json`. If the input path must come from settings, discovery instead starts at the current directory. Values in that file become defaults; explicit command-line arguments override them. Use `--settings PATH` to select any settings file explicitly and disable automatic discovery. Relative paths are resolved from the directory containing the selected settings file.
 
-Copy `settings.example.json` to `settings.json` and edit the values you want:
+Copy `settings.example.json` beside your activity files as `.gpx2stl.settings.json` and edit the values you want:
 
 ```bash
-cp settings.example.json settings.json
+cp settings.example.json /path/to/activities/.gpx2stl.settings.json
 ```
 
-JSON keys use the Python/long-option names with underscores, such as `route_width`, `boundary_percent`, `text_margin`, `text_end_gap`, `inner_size_percent`, `topo_source`, and `topo_dir`. The positional `.gpx`/`.fit` file-or-directory input can also be defaulted with the backward-compatible `gpx_file` key. Use `use_3mf` for the `--3mf` / `--no-3mf` setting. Relative `font_file` paths are resolved from the settings file like other paths. Unknown keys, invalid JSON, or incorrect value types produce an explicit error. `settings.json` is ignored by Git; `settings.example.json` is tracked as a complete template.
+JSON keys use the Python/long-option names with underscores, such as `route_width`, `boundary_percent`, `text_margin`, `text_end_gap`, `inner_size_percent`, `topo_source`, and `topo_dir`. The positional `.gpx`/`.fit` file-or-directory input can also be defaulted with the backward-compatible `gpx_file` key. Use `use_3mf` for the `--3mf` / `--no-3mf` setting. Relative `font_file` paths are resolved from the settings file like other paths. Unknown keys, invalid JSON, or incorrect value types produce an explicit error. `.gpx2stl.settings.json` is ignored by Git; `settings.example.json` is tracked as a complete template.
+
+```bash
+# Use a settings file with any name or location
+python -m gpx2stl route.gpx --settings ./profiles/large-model.json
+```
 
 ## Local terrain assets
 
@@ -145,6 +150,7 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 | Option | Default | Description |
 |---|---:|---|
 | `input_path` | required | Input `.gpx`/`.fit` file or directory. A directory converts each directly contained supported file independently and non-recursively. |
+| `--settings` | discovered | Explicit settings file path. Overrides `.gpx2stl.settings.json` discovery. |
 | `-o`, `--output` | input stem | Output file path for a file input, or an existing output directory for a directory input. |
 | `--route-width` | `1` mm | Printed route ribbon width. |
 | `--route-height` | `2` mm | Route height above terrain in topo mode. |
@@ -289,15 +295,20 @@ OPENTOPOGRAPHY_API_KEY=你的API密钥
 
 ## 设置文件
 
-程序启动时会从当前目录向上查找 `settings.json`。文件中的值会成为默认参数，命令行中显式传入的参数优先级更高。相对路径以 `settings.json` 所在目录为基准解析。
+程序启动时会从输入文件所在目录（或输入目录本身）向上查找 `.gpx2stl.settings.json`。如果输入路径本身需要由设置文件提供，则改为从当前目录向上查找。文件中的值会成为默认参数，命令行中显式传入的参数优先级更高。可用 `--settings PATH` 显式选择任意设置文件并禁用自动查找。相对路径以所选设置文件所在目录为基准解析。
 
-复制完整模板后按需修改：
+将完整模板复制到活动文件旁并按需修改：
 
 ```bash
-cp settings.example.json settings.json
+cp settings.example.json /path/to/activities/.gpx2stl.settings.json
 ```
 
-JSON 键使用 Python/长参数对应的下划线名称，例如 `route_width`、`boundary_percent`、`text_margin`、`text_end_gap`、`inner_size_percent`、`topo_source` 和 `topo_dir`。也可用向后兼容的 `gpx_file` 键设置默认 `.gpx`/`.fit` 文件或目录；`--3mf` / `--no-3mf` 对应 `use_3mf`。相对 `font_file` 路径与其他路径一样，以设置文件所在目录为基准解析。未知键、无效 JSON 或错误的数据类型都会产生明确错误。`settings.json` 已被 Git 忽略，而完整模板 `settings.example.json` 会纳入版本控制。
+JSON 键使用 Python/长参数对应的下划线名称，例如 `route_width`、`boundary_percent`、`text_margin`、`text_end_gap`、`inner_size_percent`、`topo_source` 和 `topo_dir`。也可用向后兼容的 `gpx_file` 键设置默认 `.gpx`/`.fit` 文件或目录；`--3mf` / `--no-3mf` 对应 `use_3mf`。相对 `font_file` 路径与其他路径一样，以设置文件所在目录为基准解析。未知键、无效 JSON 或错误的数据类型都会产生明确错误。`.gpx2stl.settings.json` 已被 Git 忽略，而完整模板 `settings.example.json` 会纳入版本控制。
+
+```bash
+# 使用任意名称或位置的设置文件
+python -m gpx2stl route.gpx --settings ./profiles/large-model.json
+```
 
 ## 本地地形资源
 
@@ -388,6 +399,7 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 | 参数 | 默认值 | 说明 |
 |---|---:|---|
 | `input_path` | 必填 | 输入 `.gpx`/`.fit` 文件或目录；目录中直接包含的每个受支持文件会被独立、非递归地转换。 |
+| `--settings` | 自动查找 | 显式指定设置文件路径，并覆盖 `.gpx2stl.settings.json` 自动查找。 |
 | `-o`, `--output` | 输入文件名 | 文件输入时为输出文件路径；目录输入时为已存在的输出目录。 |
 | `--route-width` | `1` mm | 打印路线带宽度。 |
 | `--route-height` | `2` mm | 启用地形时路线高出地形的高度。 |

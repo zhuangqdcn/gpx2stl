@@ -6,6 +6,7 @@ import pytest
 
 import gpx2stl.cli
 from gpx2stl.cli import (
+    SETTINGS_FILENAME,
     config_from_args,
     configs_from_args,
     create_parser,
@@ -237,10 +238,70 @@ def test_main_converts_each_directory_gpx_individually(
     assert [config.output.name for config in captured] == ["one.3mf", "two.3mf"]
 
 
+def test_main_discovers_settings_beside_input_file(
+    simple_gpx: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (simple_gpx.parent / SETTINGS_FILENAME).write_text(
+        '{"route_width": 3.0, "topo": false}',
+        encoding="utf-8",
+    )
+    captured = []
+    monkeypatch.setattr(gpx2stl.cli, "convert", captured.append)
+
+    gpx2stl.cli.main([str(simple_gpx)])
+
+    assert captured[0].route_width == 3.0
+    assert captured[0].topo is False
+
+
+def test_explicit_settings_path_overrides_discovery(
+    simple_gpx: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (simple_gpx.parent / SETTINGS_FILENAME).write_text(
+        '{"route_width": 3.0, "topo": false}',
+        encoding="utf-8",
+    )
+    explicit = tmp_path / "custom-settings.json"
+    explicit.write_text(
+        '{"route_width": 4.0, "topo": false}',
+        encoding="utf-8",
+    )
+    captured = []
+    monkeypatch.setattr(gpx2stl.cli, "convert", captured.append)
+
+    gpx2stl.cli.main([str(simple_gpx), "--settings", str(explicit)])
+
+    assert captured[0].route_width == 4.0
+
+
+def test_command_line_overrides_explicit_settings(
+    simple_gpx: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    explicit = tmp_path / "custom-settings.json"
+    explicit.write_text(
+        '{"route_width": 3.0, "topo": false}',
+        encoding="utf-8",
+    )
+    captured = []
+    monkeypatch.setattr(gpx2stl.cli, "convert", captured.append)
+
+    gpx2stl.cli.main(
+        [
+            str(simple_gpx),
+            "--settings",
+            str(explicit),
+            "--route-width",
+            "5",
+        ]
+    )
+
+    assert captured[0].route_width == 5.0
+
+
 def test_settings_supply_defaults_and_cli_wins(
     simple_gpx: Path, tmp_path: Path
 ) -> None:
-    settings_path = tmp_path / "settings.json"
+    settings_path = tmp_path / SETTINGS_FILENAME
     settings_path.write_text(
         """
 {
@@ -295,6 +356,8 @@ def test_every_cli_parameter_overrides_settings_defaults() -> None:
     args = create_parser(settings).parse_args(
         [
             "cli.gpx",
+            "--settings",
+            "cli-settings.json",
             "--output",
             "cli.stl",
             "--route-width",
@@ -342,6 +405,7 @@ def test_every_cli_parameter_overrides_settings_defaults() -> None:
     )
 
     assert args.gpx_file == Path("cli.gpx")
+    assert args.settings == Path("cli-settings.json")
     assert args.output == Path("cli.stl")
     assert args.route_width == 3.0
     assert args.route_height == 4.0
@@ -402,15 +466,34 @@ def test_settings_can_supply_required_gpx(
 
 
 def test_find_settings_searches_parent_directories(tmp_path: Path) -> None:
-    settings = tmp_path / "settings.json"
+    settings = tmp_path / SETTINGS_FILENAME
     settings.write_text("{}", encoding="utf-8")
     nested = tmp_path / "one" / "two"
     nested.mkdir(parents=True)
     assert find_settings(nested) == settings
 
 
+def test_find_settings_ignores_old_filename(tmp_path: Path) -> None:
+    (tmp_path / "settings.json").write_text("{}", encoding="utf-8")
+    assert find_settings(tmp_path) is None
+
+
+def test_explicit_missing_settings_file_is_reported(
+    simple_gpx: Path, tmp_path: Path
+) -> None:
+    with pytest.raises(SystemExit) as error:
+        gpx2stl.cli.main(
+            [
+                str(simple_gpx),
+                "--settings",
+                str(tmp_path / "missing.json"),
+            ]
+        )
+    assert error.value.code == 1
+
+
 def test_settings_paths_are_relative_to_settings_file(tmp_path: Path) -> None:
-    settings = tmp_path / "settings.json"
+    settings = tmp_path / SETTINGS_FILENAME
     settings.write_text(
         '{"gpx_file": "routes/example.gpx", "topo_dir": "asset", '
         '"font_file": "fonts/custom.ttf", "base_stl": "bases/custom.stl"}',
@@ -526,14 +609,14 @@ def test_route_width_must_fit_text_inset(simple_gpx: Path) -> None:
 
 
 def test_unknown_setting_is_rejected(tmp_path: Path) -> None:
-    settings = tmp_path / "settings.json"
+    settings = tmp_path / SETTINGS_FILENAME
     settings.write_text('{"unknown": true}', encoding="utf-8")
     with pytest.raises(Gpx2StlError, match="Unknown setting"):
         load_settings(settings)
 
 
 def test_invalid_settings_json_is_rejected(tmp_path: Path) -> None:
-    settings = tmp_path / "settings.json"
+    settings = tmp_path / SETTINGS_FILENAME
     settings.write_text("{", encoding="utf-8")
     with pytest.raises(Gpx2StlError, match="Invalid JSON"):
         load_settings(settings)
