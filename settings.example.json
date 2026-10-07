@@ -19,7 +19,11 @@
   "base_height": 2.0,
   "topo_source": "auto",
   "topo_file": null,
+  "topo_file_windows": null,
+  "topo_file_linux": null,
   "topo_dir": "asset",
+  "topo_dir_windows": null,
+  "topo_dir_linux": null,
   "dem_type": null,
   "api_key": null,
   "force": false

@@ -56,6 +56,21 @@ cp settings.example.json /path/to/activities/.gpx2stl.settings.json
 
 JSON keys use the Python/long-option names with underscores, such as `route_width`, `boundary_percent`, `text_margin`, `text_end_gap`, `inner_size_percent`, `topo_source`, and `topo_dir`. The positional `.gpx`/`.fit` file-or-directory input can also be defaulted with the backward-compatible `gpx_file` key. Use `use_3mf` for the `--3mf` / `--no-3mf` setting. Relative `font_file` paths are resolved from the settings file like other paths. Unknown keys, invalid JSON, or incorrect value types produce an explicit error. `.gpx2stl.settings.json` is ignored by Git; `settings.example.json` is tracked as a complete template.
 
+For terrain paths shared between Windows and Linux/WSL, settings support `topo_file_windows`, `topo_file_linux`, `topo_dir_windows`, and `topo_dir_linux`. A non-null key matching the current OS overrides the corresponding generic `topo_file` or `topo_dir`. A null or absent OS-specific key falls back to the generic value. Paths for the inactive OS are not interpreted or resolved.
+
+```json
+{
+  "topo_file": null,
+  "topo_file_windows": null,
+  "topo_file_linux": null,
+  "topo_dir": "asset",
+  "topo_dir_windows": "E:\\terrain\\glo30",
+  "topo_dir_linux": "/mnt/e/terrain/glo30"
+}
+```
+
+The complete path precedence is explicit `--topo-file` / `--topo-dir`, then the matching non-null OS-specific setting, then the generic setting, then the built-in `asset` directory default. `topo_file` still takes precedence over `topo_dir` after platform selection. Relative selected paths are resolved from the settings-file directory.
+
 ```bash
 # Use a settings file with any name or location
 python -m gpx2stl route.gpx --settings ./profiles/large-model.json
@@ -304,6 +319,21 @@ cp settings.example.json /path/to/activities/.gpx2stl.settings.json
 ```
 
 JSON 键使用 Python/长参数对应的下划线名称，例如 `route_width`、`boundary_percent`、`text_margin`、`text_end_gap`、`inner_size_percent`、`topo_source` 和 `topo_dir`。也可用向后兼容的 `gpx_file` 键设置默认 `.gpx`/`.fit` 文件或目录；`--3mf` / `--no-3mf` 对应 `use_3mf`。相对 `font_file` 路径与其他路径一样，以设置文件所在目录为基准解析。未知键、无效 JSON 或错误的数据类型都会产生明确错误。`.gpx2stl.settings.json` 已被 Git 忽略，而完整模板 `settings.example.json` 会纳入版本控制。
+
+为了在 Windows 与 Linux/WSL 之间共享地形设置，可使用 `topo_file_windows`、`topo_file_linux`、`topo_dir_windows` 和 `topo_dir_linux`。当前系统对应的非空键会覆盖通用 `topo_file` 或 `topo_dir`；对应键为空或不存在时会回退到通用值。程序不会解释或解析另一个操作系统的路径。
+
+```json
+{
+  "topo_file": null,
+  "topo_file_windows": null,
+  "topo_file_linux": null,
+  "topo_dir": "asset",
+  "topo_dir_windows": "E:\\terrain\\glo30",
+  "topo_dir_linux": "/mnt/e/terrain/glo30"
+}
+```
+
+完整路径优先级为：显式 `--topo-file` / `--topo-dir`、当前系统对应的非空专用设置、通用设置、内置 `asset` 目录默认值。完成平台选择后，`topo_file` 仍优先于 `topo_dir`。选中的相对路径以设置文件所在目录为基准解析。
 
 ```bash
 # 使用任意名称或位置的设置文件

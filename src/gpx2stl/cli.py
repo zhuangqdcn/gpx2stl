@@ -4,6 +4,7 @@ import argparse
 import json
 import math
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -36,12 +37,22 @@ SETTING_KEYS = {
     "base_height",
     "topo_source",
     "topo_file",
+    "topo_file_windows",
+    "topo_file_linux",
     "topo_dir",
+    "topo_dir_windows",
+    "topo_dir_linux",
     "dem_type",
     "api_key",
     "force",
 }
 SETTINGS_FILENAME = ".gpx2stl.settings.json"
+PLATFORM_TOPO_KEYS = (
+    "topo_file_windows",
+    "topo_file_linux",
+    "topo_dir_windows",
+    "topo_dir_linux",
+)
 
 
 def _positive(value: str) -> float:
@@ -74,6 +85,34 @@ def find_settings(start: Path | None = None) -> Path | None:
     return None
 
 
+def _select_platform_topo_settings(
+    settings: dict[str, Any],
+    platform: str,
+) -> dict[str, Any]:
+    selected = settings.copy()
+    for name in PLATFORM_TOPO_KEYS:
+        value = selected.get(name)
+        if value is not None and not isinstance(value, str):
+            raise Gpx2StlError(
+                f"Settings file value '{name}' must be a path string or null."
+            )
+    platform_suffix = (
+        "windows"
+        if platform.startswith("win")
+        else "linux"
+        if platform.startswith("linux")
+        else None
+    )
+    if platform_suffix is not None:
+        for generic_name in ("topo_file", "topo_dir"):
+            platform_value = selected.get(f"{generic_name}_{platform_suffix}")
+            if platform_value is not None:
+                selected[generic_name] = platform_value
+    for name in PLATFORM_TOPO_KEYS:
+        selected.pop(name, None)
+    return selected
+
+
 def load_settings(path: Path | None) -> dict[str, Any]:
     if path is None:
         return {}
@@ -94,6 +133,7 @@ def load_settings(path: Path | None) -> dict[str, Any]:
             f"Unknown setting{'s' if len(unknown) != 1 else ''} in '{path}': "
             f"{', '.join(unknown)}"
         )
+    value = _select_platform_topo_settings(value, sys.platform)
     for name in (
         "gpx_file",
         "output",

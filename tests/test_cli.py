@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -7,6 +8,7 @@ import pytest
 import gpx2stl.cli
 from gpx2stl.cli import (
     SETTINGS_FILENAME,
+    _select_platform_topo_settings,
     config_from_args,
     configs_from_args,
     create_parser,
@@ -508,6 +510,143 @@ def test_settings_paths_are_relative_to_settings_file(tmp_path: Path) -> None:
     assert values["base_stl"] == str(
         (tmp_path / "bases" / "custom.stl").resolve()
     )
+
+
+def test_platform_topo_paths_override_generic_values() -> None:
+    settings = {
+        "topo_file": "generic.tif",
+        "topo_file_windows": r"E:\terrain\windows.tif",
+        "topo_file_linux": "/mnt/e/terrain/linux.tif",
+        "topo_dir": "generic-assets",
+        "topo_dir_windows": r"E:\terrain\windows-assets",
+        "topo_dir_linux": "/mnt/e/terrain/linux-assets",
+    }
+
+    windows = _select_platform_topo_settings(settings, "win32")
+    linux = _select_platform_topo_settings(settings, "linux")
+
+    assert windows["topo_file"] == r"E:\terrain\windows.tif"
+    assert windows["topo_dir"] == r"E:\terrain\windows-assets"
+    assert linux["topo_file"] == "/mnt/e/terrain/linux.tif"
+    assert linux["topo_dir"] == "/mnt/e/terrain/linux-assets"
+    assert not set(windows).intersection(gpx2stl.cli.PLATFORM_TOPO_KEYS)
+    assert not set(linux).intersection(gpx2stl.cli.PLATFORM_TOPO_KEYS)
+    assert settings["topo_dir"] == "generic-assets"
+
+
+def test_null_platform_topo_paths_fall_back_to_generic_values() -> None:
+    settings = {
+        "topo_file": "generic.tif",
+        "topo_file_windows": None,
+        "topo_dir": "generic-assets",
+        "topo_dir_windows": None,
+    }
+
+    selected = _select_platform_topo_settings(settings, "win32")
+
+    assert selected["topo_file"] == "generic.tif"
+    assert selected["topo_dir"] == "generic-assets"
+
+
+def test_other_platforms_use_generic_topo_paths() -> None:
+    settings = {
+        "topo_dir": "generic-assets",
+        "topo_dir_windows": r"E:\terrain\windows-assets",
+        "topo_dir_linux": "/mnt/e/terrain/linux-assets",
+    }
+
+    selected = _select_platform_topo_settings(settings, "darwin")
+
+    assert selected["topo_dir"] == "generic-assets"
+
+
+def test_selected_platform_relative_topo_path_uses_settings_directory(
+    tmp_path: Path,
+) -> None:
+    if gpx2stl.cli.sys.platform.startswith("win"):
+        platform_key = "topo_dir_windows"
+    elif gpx2stl.cli.sys.platform.startswith("linux"):
+        platform_key = "topo_dir_linux"
+    else:
+        pytest.skip("OS-specific topo settings apply only to Windows and Linux")
+    settings = tmp_path / SETTINGS_FILENAME
+    settings.write_text(
+        json.dumps({platform_key: "platform-assets"}),
+        encoding="utf-8",
+    )
+
+    values = load_settings(settings)
+
+    assert values["topo_dir"] == str((tmp_path / "platform-assets").resolve())
+
+
+@pytest.mark.parametrize("value", [123, True, [], {}])
+def test_settings_reject_invalid_platform_topo_path_types(
+    tmp_path: Path,
+    value: object,
+) -> None:
+    settings = tmp_path / SETTINGS_FILENAME
+    settings.write_text(
+        json.dumps({"topo_dir_linux": value}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(Gpx2StlError, match="topo_dir_linux"):
+        load_settings(settings)
+
+
+def test_cli_topo_dir_overrides_platform_settings(
+    simple_gpx: Path,
+    tmp_path: Path,
+) -> None:
+    settings_dir = tmp_path / "settings-assets"
+    cli_dir = tmp_path / "cli-assets"
+    parser = create_parser(
+        {
+            "topo": False,
+            "topo_dir": str(settings_dir),
+        }
+    )
+
+    config = config_from_args(
+        parser.parse_args(
+            [
+                str(simple_gpx),
+                "--topo-dir",
+                str(cli_dir),
+            ]
+        ),
+        parser,
+    )
+
+    assert config.topo_dir == cli_dir.resolve()
+
+
+def test_cli_topo_file_overrides_platform_settings(
+    simple_gpx: Path,
+    tmp_path: Path,
+) -> None:
+    settings_file = tmp_path / "settings.tif"
+    cli_file = tmp_path / "cli.tif"
+    parser = create_parser(
+        {
+            "topo": False,
+            "topo_file": str(settings_file),
+        }
+    )
+
+    config = config_from_args(
+        parser.parse_args(
+            [
+                str(simple_gpx),
+                "--topo-file",
+                str(cli_file),
+            ]
+        ),
+        parser,
+    )
+
+    assert config.topo_file == cli_file.resolve()
 
 
 def test_base_stl_is_validated(simple_gpx: Path, tmp_path: Path) -> None:
