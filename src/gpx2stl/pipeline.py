@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from gpx2stl.activity import read_activity
 from gpx2stl.custom_base import CustomBase, prepare_custom_base, sample_exterior
 from gpx2stl.dem import (
     DemSource,
@@ -19,7 +20,7 @@ from gpx2stl.footprint import (
     create_footprint,
     create_model_transform,
 )
-from gpx2stl.gpx import interpolate_elevations, project_paths, read_gpx
+from gpx2stl.gpx import interpolate_elevations, project_paths
 from gpx2stl.mesh import build_geometry
 from gpx2stl.models import Config
 from gpx2stl.progress import ProgressCallback, console_progress
@@ -70,8 +71,8 @@ def resolve_dem(
 def convert(
     config: Config, progress: ProgressCallback = console_progress
 ) -> None:
-    progress(f"Reading GPX paths from {config.gpx_file}")
-    paths = read_gpx(config.gpx_file)
+    progress(f"Reading activity paths from {config.gpx_file}")
+    paths = read_activity(config.gpx_file)
     point_count = sum(len(path.latitude) for path in paths)
     progress(
         f"Loaded {len(paths)} path{'s' if len(paths) != 1 else ''} "

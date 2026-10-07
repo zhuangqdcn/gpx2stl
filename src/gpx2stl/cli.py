@@ -9,6 +9,7 @@ from typing import Any
 
 from dotenv import find_dotenv, load_dotenv
 
+from gpx2stl.activity import ACTIVITY_EXTENSIONS
 from gpx2stl.dem import iter_local_geotiffs
 from gpx2stl.errors import Gpx2StlError
 from gpx2stl.models import Config
@@ -111,19 +112,20 @@ def load_settings(path: Path | None) -> dict[str, Any]:
 def create_parser(settings: dict[str, Any] | None = None) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="gpx2stl",
-        description="Convert GPX tracks and routes into printable terrain models.",
+        description="Convert GPX or Garmin FIT activities into printable terrain models.",
     )
     parser.add_argument(
         "gpx_file",
+        metavar="input_path",
         nargs="?",
         type=Path,
-        help="input GPX file or directory containing GPX files",
+        help="input .gpx/.fit file or directory containing activity files",
     )
     parser.add_argument(
         "-o",
         "--output",
         type=Path,
-        help="output file, or output directory for a GPX directory input",
+        help="output file, or output directory for an activity directory input",
     )
     parser.add_argument("--route-width", type=_positive, default=1.0, help="route width in mm")
     parser.add_argument(
@@ -246,7 +248,9 @@ def config_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser) 
     _validate_setting_types(args, parser)
     gpx_file = Path(args.gpx_file).resolve()
     if not gpx_file.is_file():
-        parser.error(f"GPX file does not exist or is not a file: {gpx_file}")
+        parser.error(f"activity file does not exist or is not a file: {gpx_file}")
+    if gpx_file.suffix.lower() not in ACTIVITY_EXTENSIONS:
+        parser.error("activity file must use the .gpx or .fit extension")
     suffix = ".3mf" if args.use_3mf else ".stl"
     output = Path(args.output).resolve() if args.output else gpx_file.with_suffix(suffix)
     if output.suffix.lower() != suffix:
@@ -347,38 +351,41 @@ def configs_from_args(
     if args.gpx_file is None:
         parser.error("gpx_file is required as an argument or settings.json value")
     _validate_setting_types(args, parser)
-    gpx_input = Path(args.gpx_file).resolve()
-    if not gpx_input.exists():
-        parser.error(f"GPX input does not exist: {gpx_input}")
-    if gpx_input.is_file():
+    activity_input = Path(args.gpx_file).resolve()
+    if not activity_input.exists():
+        parser.error(f"activity input does not exist: {activity_input}")
+    if activity_input.is_file():
         return (config_from_args(args, parser),)
-    if not gpx_input.is_dir():
-        parser.error(f"GPX input is not a file or directory: {gpx_input}")
+    if not activity_input.is_dir():
+        parser.error(f"activity input is not a file or directory: {activity_input}")
 
     try:
-        gpx_files = tuple(
+        activity_files = tuple(
             sorted(
                 (
                     path
-                    for path in gpx_input.iterdir()
-                    if path.is_file() and path.suffix.lower() == ".gpx"
+                    for path in activity_input.iterdir()
+                    if path.is_file()
+                    and path.suffix.lower() in ACTIVITY_EXTENSIONS
                 ),
                 key=lambda path: (path.name.lower(), path.name),
             )
         )
     except OSError as exc:
-        parser.error(f"unable to read GPX directory '{gpx_input}': {exc}")
-    if not gpx_files:
-        parser.error(f"GPX directory contains no .gpx files: {gpx_input}")
+        parser.error(f"unable to read activity directory '{activity_input}': {exc}")
+    if not activity_files:
+        parser.error(
+            f"activity directory contains no .gpx or .fit files: {activity_input}"
+        )
 
-    output_dir = Path(args.output).resolve() if args.output else gpx_input
+    output_dir = Path(args.output).resolve() if args.output else activity_input
     if not output_dir.is_dir():
         parser.error(
-            "output must be an existing directory when the GPX input is a directory: "
+            "output must be an existing directory when the activity input is a directory: "
             f"{output_dir}"
         )
     suffix = ".3mf" if args.use_3mf else ".stl"
-    output_names = [f"{gpx_file.stem}{suffix}" for gpx_file in gpx_files]
+    output_names = [f"{activity_file.stem}{suffix}" for activity_file in activity_files]
     output_name_keys = [name.casefold() for name in output_names]
     duplicate_names = sorted(
         {
@@ -389,15 +396,19 @@ def configs_from_args(
     )
     if duplicate_names:
         parser.error(
-            "GPX directory contains files that map to the same output name: "
+            "activity directory contains files that map to the same output name: "
             + ", ".join(duplicate_names)
         )
     configs = []
-    for gpx_file, output_name in zip(gpx_files, output_names, strict=True):
+    for activity_file, output_name in zip(
+        activity_files,
+        output_names,
+        strict=True,
+    ):
         file_args = argparse.Namespace(
             **{
                 **vars(args),
-                "gpx_file": gpx_file,
+                "gpx_file": activity_file,
                 "output": output_dir / output_name,
             }
         )

@@ -1,12 +1,12 @@
 # gpx2stl
 
-Convert GPX tracks and routes into printable terrain models:
+Convert GPX tracks/routes and Garmin FIT activities into printable terrain models:
 
 - **3MF by default:** separate named objects and materials for Bambu Studio. Filament 1 is the GPX route, filament 2 is topography, filament 3 is optional text, and filament 4 is the base.
 - **STL on request:** one watertight mesh containing the base, route, and all enabled features.
 - **Flexible topography:** use local GeoTIFF files first or download SRTMGL1/COP30 data from OpenTopography.
-- **File or folder input:** convert one GPX file or every GPX file directly in a folder; folder routes remain separate models.
-- **Square, circular, or hexagonal base:** automatically sized around every track segment and GPX route in each input file.
+- **File or folder input:** convert one `.gpx`/`.fit` file or every supported activity file directly in a folder; files remain separate models.
+- **Square, circular, or hexagonal base:** automatically sized around every path in each input activity.
 - **Custom STL base:** preserve an existing model and use its highest flat top as the exact terrain shape.
 - **Optional perimeter text:** place terrain in a centered inset and wrap raised text around the full flat outer frame.
 
@@ -54,7 +54,7 @@ Copy `settings.example.json` to `settings.json` and edit the values you want:
 cp settings.example.json settings.json
 ```
 
-JSON keys use the Python/long-option names with underscores, such as `route_width`, `boundary_percent`, `text_margin`, `text_end_gap`, `inner_size_percent`, `topo_source`, and `topo_dir`. The positional file-or-directory input can also be defaulted with `gpx_file`. Use `use_3mf` for the `--3mf` / `--no-3mf` setting. Relative `font_file` paths are resolved from the settings file like other paths. Unknown keys, invalid JSON, or incorrect value types produce an explicit error. `settings.json` is ignored by Git; `settings.example.json` is tracked as a complete template.
+JSON keys use the Python/long-option names with underscores, such as `route_width`, `boundary_percent`, `text_margin`, `text_end_gap`, `inner_size_percent`, `topo_source`, and `topo_dir`. The positional `.gpx`/`.fit` file-or-directory input can also be defaulted with the backward-compatible `gpx_file` key. Use `use_3mf` for the `--3mf` / `--no-3mf` setting. Relative `font_file` paths are resolved from the settings file like other paths. Unknown keys, invalid JSON, or incorrect value types produce an explicit error. `settings.json` is ignored by Git; `settings.example.json` is tracked as a complete template.
 
 ## Local terrain assets
 
@@ -79,7 +79,7 @@ Download every 1° tile touched by the padded footprint, not only the raw GPX ce
 python -m gpx2stl route.gpx
 ```
 
-This writes `route.3mf` beside `route.gpx`. A directory input converts each `.gpx` file directly in that directory into a separate model; files are never joined:
+This writes `route.3mf` beside `route.gpx`. A directory input converts each `.gpx` or `.fit` file directly in that directory into a separate model; files are never joined:
 
 ```bash
 python -m gpx2stl ./routes
@@ -88,7 +88,15 @@ python -m gpx2stl ./routes
 python -m gpx2stl ./routes --output ./models
 ```
 
-Directory scanning is non-recursive. By default, each output is written beside its source GPX with the same stem and the selected `.3mf` or `.stl` extension. When the input is a directory, `--output` must name an existing output directory.
+Garmin FIT files use the same command:
+
+```bash
+python -m gpx2stl activity.fit
+```
+
+For FIT input, GPS `record` messages become route points, Garmin semicircle coordinates are converted to degrees, and enhanced altitude is used when available. A missing-GPS record or timer-stop event separates paths instead of connecting positions across a pause or data gap.
+
+Directory scanning is non-recursive and includes `.gpx` and `.fit` case-insensitively. By default, each output is written beside its source activity with the same stem and the selected `.3mf` or `.stl` extension. A `.gpx` and `.fit` with the same stem would target the same output and are rejected explicitly. When the input is a directory, `--output` must name an existing output directory.
 
 Examples:
 
@@ -136,7 +144,7 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 
 | Option | Default | Description |
 |---|---:|---|
-| `gpx_file` | required | Input GPX file or directory. A directory converts each directly contained `.gpx` file independently and non-recursively. |
+| `input_path` | required | Input `.gpx`/`.fit` file or directory. A directory converts each directly contained supported file independently and non-recursively. |
 | `-o`, `--output` | input stem | Output file path for a file input, or an existing output directory for a directory input. |
 | `--route-width` | `1` mm | Printed route ribbon width. |
 | `--route-height` | `2` mm | Route height above terrain in topo mode. |
@@ -167,7 +175,7 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 - The route width is included as extra footprint clearance, including when boundary padding is zero.
 - By default, terrain elevations use the same scale as X/Y: the horizontal ratio derived from `--max-size` is applied to the DEM elevation range. For example, a horizontal scale of 1:20,000 also makes 1,000 m of elevation equal 50 mm.
 - Setting `--terrain-height` explicitly overrides true-scale relief and normalizes the DEM minimum-to-maximum range to that many millimeters.
-- Without topo, GPX altitude controls the route top at physical 1:20,000 vertical scale: 1,000 m becomes 50 mm. Internal missing elevations are interpolated; missing endpoint/all elevations are errors.
+- Without topo, GPX or FIT altitude controls the route top at physical 1:20,000 vertical scale: 1,000 m becomes 50 mm. Internal missing elevations are interpolated; missing endpoint/all elevations are errors.
 - Square output is the smallest north-up square around the route before padding. Circle output uses the true minimum enclosing circle. Hex output uses the minimum translated flat-top regular hexagon.
 - When `--text` is present, `--max-size` controls the outer square, circle, or hex frame. Terrain and route are instead scaled into a centered circle controlled by `--inner-size-percent`; the rest of the frame stays flat at the base-top height.
 - In 3MF output, the generated prism or supplied custom STL remains a separate `Base` object. Enabled relief is a separately watertight `Topography` object with a small intentional overlap into the base for reliable slicing. Disabling topo omits that object.
@@ -237,12 +245,13 @@ This project is licensed under the [MIT License](LICENSE). Terrain datasets rema
 
 # 中文说明
 
-`gpx2stl` 可将 GPX 轨迹和路线转换为适合 3D 打印的地形模型：
+`gpx2stl` 可将 GPX 轨迹/路线和 Garmin FIT 活动转换为适合 3D 打印的地形模型：
 
 - **默认输出 3MF：**包含可导入 Bambu Studio 的独立命名对象和材料。耗材 1 用于 GPX 路线，耗材 2 用于地形，耗材 3 用于可选文字，耗材 4 用于底座。
 - **可选输出 STL：**底座、路线和所有启用的功能合并为一个水密网格。
 - **灵活的真实地形：**优先使用本地 GeoTIFF，或通过 OpenTopography 下载 SRTMGL1/COP30 高程数据。
-- **方形、圆形或六边形底座：**根据输入文件中的全部轨迹段和 GPX 路线自动确定范围。
+- **文件或目录输入：**可转换一个 `.gpx`/`.fit` 文件，或目录中直接包含的所有受支持活动文件；不同文件始终生成独立模型。
+- **方形、圆形或六边形底座：**根据每个输入活动中的全部路径自动确定范围。
 - **自定义 STL 底座：**保留现有模型，并将其最高的平坦顶面作为精确地形外形。
 - **可选全周文字：**将地形放入居中的区域，并让凸起文字沿完整平坦外框环绕。
 
@@ -288,7 +297,7 @@ OPENTOPOGRAPHY_API_KEY=你的API密钥
 cp settings.example.json settings.json
 ```
 
-JSON 键使用 Python/长参数对应的下划线名称，例如 `route_width`、`boundary_percent`、`text_margin`、`text_end_gap`、`inner_size_percent`、`topo_source` 和 `topo_dir`。也可用 `gpx_file` 设置默认输入文件或目录；`--3mf` / `--no-3mf` 对应 `use_3mf`。相对 `font_file` 路径与其他路径一样，以设置文件所在目录为基准解析。未知键、无效 JSON 或错误的数据类型都会产生明确错误。`settings.json` 已被 Git 忽略，而完整模板 `settings.example.json` 会纳入版本控制。
+JSON 键使用 Python/长参数对应的下划线名称，例如 `route_width`、`boundary_percent`、`text_margin`、`text_end_gap`、`inner_size_percent`、`topo_source` 和 `topo_dir`。也可用向后兼容的 `gpx_file` 键设置默认 `.gpx`/`.fit` 文件或目录；`--3mf` / `--no-3mf` 对应 `use_3mf`。相对 `font_file` 路径与其他路径一样，以设置文件所在目录为基准解析。未知键、无效 JSON 或错误的数据类型都会产生明确错误。`settings.json` 已被 Git 忽略，而完整模板 `settings.example.json` 会纳入版本控制。
 
 ## 本地地形资源
 
@@ -313,7 +322,7 @@ mkdir -p asset
 python -m gpx2stl route.gpx
 ```
 
-默认在 GPX 文件旁生成 `route.3mf`。目录输入会把该目录直接包含的每个 `.gpx` 文件转换为独立模型，绝不会连接不同文件中的路线：
+默认在 GPX 文件旁生成 `route.3mf`。目录输入会把该目录直接包含的每个 `.gpx` 或 `.fit` 文件转换为独立模型，绝不会连接不同文件中的路线：
 
 ```bash
 python -m gpx2stl ./routes
@@ -322,7 +331,15 @@ python -m gpx2stl ./routes
 python -m gpx2stl ./routes --output ./models
 ```
 
-目录扫描不递归。默认情况下，每个输出都写在对应源 GPX 旁边，文件名主干不变，扩展名为所选的 `.3mf` 或 `.stl`。输入为目录时，`--output` 必须指向一个已存在的输出目录。
+Garmin FIT 文件使用相同命令：
+
+```bash
+python -m gpx2stl activity.fit
+```
+
+对于 FIT 输入，程序把带 GPS 坐标的 `record` 消息作为路线点，将 Garmin semicircle 坐标转换为角度，并优先使用增强海拔。缺少 GPS 的记录或计时器停止事件会分隔路径，不会跨越暂停或数据空缺连接位置。
+
+目录扫描不递归，并以不区分大小写的方式包含 `.gpx` 和 `.fit`。默认情况下，每个输出都写在对应源活动文件旁边，文件名主干不变，扩展名为所选的 `.3mf` 或 `.stl`。同名的 `.gpx` 和 `.fit` 会映射到同一输出，因此程序会明确拒绝。输入为目录时，`--output` 必须指向一个已存在的输出目录。
 
 示例：
 
@@ -370,7 +387,7 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 
 | 参数 | 默认值 | 说明 |
 |---|---:|---|
-| `gpx_file` | 必填 | 输入 GPX 文件或目录；目录中的每个直接包含的 `.gpx` 文件会被独立、非递归地转换。 |
+| `input_path` | 必填 | 输入 `.gpx`/`.fit` 文件或目录；目录中直接包含的每个受支持文件会被独立、非递归地转换。 |
 | `-o`, `--output` | 输入文件名 | 文件输入时为输出文件路径；目录输入时为已存在的输出目录。 |
 | `--route-width` | `1` mm | 打印路线带宽度。 |
 | `--route-height` | `2` mm | 启用地形时路线高出地形的高度。 |
@@ -401,7 +418,7 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 - 计算底座范围时会额外预留路线宽度；即使边界百分比为零，路线也不会超出底座。
 - 默认情况下，地形高程与 X/Y 使用相同比例：由 `--max-size` 得出的水平缩放比例也应用于 DEM 高程范围。例如，水平比例为 1:20,000 时，1,000 m 高程同样对应 50 mm。
 - 显式设置 `--terrain-height` 会覆盖真实比例，将 DEM 最低点到最高点的高度差归一化到指定毫米数。
-- 禁用地形时，路线顶部采用 GPX 高程和真实的 1:20,000 垂直比例：1,000 m 对应 50 mm。内部缺失高程会插值；端点或全部高程缺失会报错。
+- 禁用地形时，路线顶部采用 GPX 或 FIT 高程和真实的 1:20,000 垂直比例：1,000 m 对应 50 mm。内部缺失高程会插值；端点或全部高程缺失会报错。
 - 方形为加边界前包围路线的最小正北方形；圆形为真实最小包围圆；六边形为可平移的最小平顶正六边形。
 - 指定 `--text` 后，`--max-size` 控制方形、圆形或六边形外框尺寸。地形和路线会缩放到由 `--inner-size-percent` 控制的居中圆形区域，其余外框保持在底座顶面的平坦高度。
 - 在 3MF 输出中，生成的棱柱或提供的自定义 STL 会保留为独立的 `Base` 对象。启用的起伏地形是另一个独立水密的 `Topography` 对象，并略微伸入底座以确保切片可靠。禁用地形时不会生成该对象。

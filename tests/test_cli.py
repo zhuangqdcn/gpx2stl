@@ -54,12 +54,13 @@ def test_no_topo_stl_does_not_require_key(simple_gpx: Path) -> None:
 
 
 def test_directory_input_creates_one_config_per_gpx(
-    simple_gpx: Path, tmp_path: Path
+    simple_gpx: Path, simple_fit: Path, tmp_path: Path
 ) -> None:
     routes = tmp_path / "routes"
     routes.mkdir()
     (routes / "zeta.gpx").write_bytes(simple_gpx.read_bytes())
     (routes / "Alpha.GPX").write_bytes(simple_gpx.read_bytes())
+    (routes / "middle.FIT").write_bytes(simple_fit.read_bytes())
     (routes / "notes.txt").write_text("not a route", encoding="utf-8")
     nested = routes / "nested"
     nested.mkdir()
@@ -71,9 +72,14 @@ def test_directory_input_creates_one_config_per_gpx(
         parser,
     )
 
-    assert [config.gpx_file.name for config in configs] == ["Alpha.GPX", "zeta.gpx"]
+    assert [config.gpx_file.name for config in configs] == [
+        "Alpha.GPX",
+        "middle.FIT",
+        "zeta.gpx",
+    ]
     assert [config.output for config in configs] == [
         routes / "Alpha.3mf",
+        routes / "middle.3mf",
         routes / "zeta.3mf",
     ]
 
@@ -133,18 +139,27 @@ def test_directory_input_requires_output_directory(
 
 
 def test_directory_input_rejects_duplicate_output_stems(
-    simple_gpx: Path, tmp_path: Path
+    simple_gpx: Path, simple_fit: Path, tmp_path: Path
 ) -> None:
     routes = tmp_path / "routes"
     routes.mkdir()
     (routes / "route.gpx").write_bytes(simple_gpx.read_bytes())
-    (routes / "route.GPX").write_bytes(simple_gpx.read_bytes())
-    if len(tuple(routes.iterdir())) < 2:
-        pytest.skip("filesystem is case-insensitive")
+    (routes / "route.fit").write_bytes(simple_fit.read_bytes())
     parser = create_parser()
     with pytest.raises(SystemExit):
         configs_from_args(
             parser.parse_args([str(routes), "--no-topo"]),
+            parser,
+        )
+
+
+def test_file_input_rejects_unsupported_activity_extension(tmp_path: Path) -> None:
+    route = tmp_path / "route.tcx"
+    route.touch()
+    parser = create_parser()
+    with pytest.raises(SystemExit):
+        configs_from_args(
+            parser.parse_args([str(route), "--no-topo"]),
             parser,
         )
 

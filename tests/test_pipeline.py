@@ -78,7 +78,7 @@ def test_conversion_reports_meaningful_progress(
         progress=messages.append,
     )
     assert output.is_file()
-    assert any(message.startswith("Reading GPX paths") for message in messages)
+    assert any(message.startswith("Reading activity paths") for message in messages)
     assert any(message.startswith("Loaded 1 path") for message in messages)
     assert any(message.startswith("Created square footprint") for message in messages)
     assert "Topography disabled; generating a flat base" in messages
@@ -88,6 +88,24 @@ def test_conversion_reports_meaningful_progress(
     assert "Writing 2-object, 4-material 3MF package" in messages
     assert "Validated 3MF mesh and material resources" in messages
     assert messages[-1] == f"Finished writing {output}"
+
+
+def test_fit_conversion_generates_an_independent_model(
+    simple_fit: Path, tmp_path: Path
+) -> None:
+    output = tmp_path / "fit-route.3mf"
+    messages: list[str] = []
+    convert(
+        Config(
+            gpx_file=simple_fit,
+            output=output,
+            topo=False,
+            max_size=20.0,
+        ),
+        progress=messages.append,
+    )
+    assert output.is_file()
+    assert any(message.startswith("Loaded 2 paths") for message in messages)
 
 
 def test_text_conversion_uses_circular_inset_and_three_materials(

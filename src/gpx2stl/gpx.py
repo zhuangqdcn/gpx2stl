@@ -56,10 +56,13 @@ def interpolate_elevations(path: GeoPath) -> GeoPath:
     elevation = path.elevation.copy()
     valid = np.flatnonzero(np.isfinite(elevation))
     if len(valid) == 0:
-        raise Gpx2StlError("A GPX path has no elevation values and cannot be used without topo.")
+        raise Gpx2StlError(
+            "An activity path has no elevation values and cannot be used without topo."
+        )
     if valid[0] != 0 or valid[-1] != len(elevation) - 1:
         raise Gpx2StlError(
-            "A GPX path is missing an endpoint elevation; only internal gaps can be interpolated."
+            "An activity path is missing an endpoint elevation; "
+            "only internal gaps can be interpolated."
         )
     missing = np.flatnonzero(~np.isfinite(elevation))
     if len(missing):
