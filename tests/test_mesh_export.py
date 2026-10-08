@@ -37,6 +37,7 @@ def _geometry(simple_gpx: Path, output: Path, use_3mf: bool):
         output=output,
         topo=False,
         use_3mf=use_3mf,
+        route_boundary_percent=10.0,
         max_size=20.0,
         route_width=1.0,
     )
@@ -60,6 +61,7 @@ def test_topo_circle_geometry_is_watertight(simple_gpx: Path, tmp_path: Path) ->
         output=tmp_path / "unused.3mf",
         topo=True,
         shape="circle",
+        route_boundary_percent=10.0,
         max_size=20.0,
     )
     geometry = build_geometry(route, footprint, transform, config, SlopedDem())
@@ -88,6 +90,7 @@ def test_hex_geometry_is_watertight(simple_gpx: Path, tmp_path: Path) -> None:
         output=tmp_path / "unused.3mf",
         topo=True,
         shape="hex",
+        route_boundary_percent=10.0,
         max_size=20.0,
     )
     geometry = build_geometry(route, footprint, transform, config, SlopedDem())
@@ -122,6 +125,7 @@ def _text_geometry(
         output=output,
         topo=False,
         shape=shape,
+        route_boundary_percent=10.0,
         text=text,
         text_height=1.0,
         text_margin=text_margin,
@@ -358,6 +362,7 @@ def test_explicit_terrain_height_overrides_automatic_scale(
         output=tmp_path / "unused.3mf",
         topo=True,
         max_size=20.0,
+        route_boundary_percent=10.0,
         terrain_height=30.0,
     )
     geometry = build_geometry(route, footprint, transform, config, SlopedDem())

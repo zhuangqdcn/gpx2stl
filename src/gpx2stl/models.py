@@ -14,6 +14,7 @@ FontWeight = Literal["normal", "bold"]
 FontStyle = Literal["normal", "italic"]
 TextAlign = Literal["left", "center", "right"]
 TextMode = Literal["raised", "embedded"]
+RouteBoundaryPercent = float | Literal["auto"]
 
 
 @dataclass(frozen=True)
@@ -23,7 +24,8 @@ class Config:
     route_width: float = 1.0
     route_height: float = 2.0
     topo: bool = True
-    route_boundary_percent: float = 10.0
+    route_boundary_percent: RouteBoundaryPercent | None = None
+    auto_boundary_max_distance_km: float = 20.0
     text_boundary_percent: float = 15.0
     shape: Shape = "square"
     text: str | None = None
@@ -49,6 +51,12 @@ class Config:
     dem_type: str | None = None
     api_key: str | None = None
     force: bool = False
+
+    @property
+    def resolved_route_boundary_percent(self) -> RouteBoundaryPercent:
+        if self.route_boundary_percent is None:
+            return "auto" if self.topo else 10.0
+        return self.route_boundary_percent
 
     @property
     def terrain_size(self) -> float:

@@ -21,14 +21,18 @@ from gpx2stl.errors import Gpx2StlError
 def test_cli_defaults(simple_gpx: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENTOPOGRAPHY_API_KEY", "test-key")
     parser = create_parser()
-    config = config_from_args(parser.parse_args([str(simple_gpx)]), parser)
+    args = parser.parse_args([str(simple_gpx)])
+    assert args.route_boundary_percent is None
+    config = config_from_args(args, parser)
 
     assert config.output == simple_gpx.with_suffix(".3mf")
     assert config.topo is True
     assert config.use_3mf is True
     assert config.route_width == 1.0
     assert config.route_height == 2.0
-    assert config.route_boundary_percent == 10.0
+    assert config.route_boundary_percent == "auto"
+    assert config.resolved_route_boundary_percent == "auto"
+    assert config.auto_boundary_max_distance_km == 20.0
     assert config.shape == "square"
     assert config.text is None
     assert config.text_height == 1.0
@@ -61,6 +65,8 @@ def test_no_topo_stl_does_not_require_key(simple_gpx: Path) -> None:
     )
     assert config.output.suffix == ".stl"
     assert config.api_key is None
+    assert config.route_boundary_percent == 10.0
+    assert config.resolved_route_boundary_percent == 10.0
 
 
 def test_directory_input_creates_one_config_per_gpx(
@@ -343,6 +349,7 @@ def test_every_cli_parameter_overrides_settings_defaults() -> None:
         "route_height": 2.0,
         "topo": True,
         "route_boundary_percent": 10.0,
+        "auto_boundary_max_distance_km": 20.0,
         "shape": "square",
         "text": "SETTINGS",
         "text_height": 1.0,
@@ -383,6 +390,8 @@ def test_every_cli_parameter_overrides_settings_defaults() -> None:
             "--no-topo",
             "--route-boundary-percent",
             "25",
+            "--auto-boundary-max-distance-km",
+            "30",
             "--shape",
             "hex",
             "--text",
@@ -439,6 +448,7 @@ def test_every_cli_parameter_overrides_settings_defaults() -> None:
     assert args.route_height == 4.0
     assert args.topo is False
     assert args.route_boundary_percent == 25.0
+    assert args.auto_boundary_max_distance_km == 30.0
     assert args.shape == "hex"
     assert args.text == "CLI"
     assert args.text_height == 1.5

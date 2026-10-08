@@ -106,7 +106,10 @@ def _fit_transform(
     terrain: Polygon,
     route_width: float,
     route_boundary_percent: float,
+    projected_envelope: Polygon | None = None,
 ) -> ModelTransform:
+    if projected_envelope is not None:
+        return _fit_envelope_transform(route, terrain, route_width, projected_envelope)
     route_minimum = route.points.min(axis=0)
     route_maximum = route.points.max(axis=0)
     source_center = (route_minimum + route_maximum) / 2.0
@@ -168,17 +171,77 @@ def _fit_transform(
     return transform
 
 
+def _fit_envelope_transform(
+    route: ProjectedRoute,
+    terrain: Polygon,
+    route_width: float,
+    envelope: Polygon,
+) -> ModelTransform:
+    if envelope.is_empty or not envelope.is_valid or not np.all(np.isfinite(envelope.bounds)):
+        raise Gpx2StlError("The detected terrain envelope is not a valid finite polygon.")
+    points = np.vstack((np.asarray(envelope.exterior.coords), route.points))
+    minimum = points.min(axis=0)
+    maximum = points.max(axis=0)
+    source_center = (minimum + maximum) / 2.0
+    target = polylabel(terrain, tolerance=max(1e-6, np.sqrt(terrain.area) * 1e-6))
+    target_center = np.array([target.x, target.y], dtype=np.float64)
+    centered_envelope = shapely.transform(envelope, lambda xy: xy - source_center)
+    centered_route = shapely.union_all(
+        [LineString(path - source_center) for path in route.paths]
+    )
+    clearance = terrain.buffer(-route_width / 2.0, quad_segs=32, join_style="round")
+
+    def fits(scale: float) -> bool:
+        model_envelope = shapely.transform(
+            centered_envelope, lambda xy: xy * scale + target_center
+        )
+        if not terrain.covers(model_envelope):
+            return False
+        model_route = shapely.transform(
+            centered_route, lambda xy: xy * scale + target_center
+        )
+        return bool(clearance.covers(model_route))
+
+    if clearance.is_empty or not clearance.covers(Point(target_center)):
+        raise Gpx2StlError(
+            "The custom base terrain region is too narrow for the requested route width."
+        )
+    span = np.maximum(maximum - minimum, 1e-12)
+    high = float(min(
+        (terrain.bounds[2] - terrain.bounds[0]) / span[0],
+        (terrain.bounds[3] - terrain.bounds[1]) / span[1],
+    ))
+    low = 0.0
+    for _ in range(64):
+        middle = (low + high) / 2.0
+        if fits(middle):
+            low = middle
+        else:
+            high = middle
+    scale = low * (1.0 - 1e-9)
+    if scale <= 1e-12 or not fits(scale):
+        raise Gpx2StlError(
+            "Unable to fit the entire detected terrain envelope and route ribbon "
+            "inside the custom base terrain region."
+        )
+    radius = max(float(np.max(np.linalg.norm(points - source_center, axis=1))), 1e-9)
+    return ModelTransform(Footprint("circle", source_center, radius), scale, target_center)
+
+
 def prepare_custom_base(
     path: Path,
     text_boundary_percent: float,
     route: ProjectedRoute,
     route_width: float,
     route_boundary_percent: float = 0.0,
+    projected_envelope: Polygon | None = None,
 ) -> CustomBase:
     mesh = _load_mesh(path)
     top, top_z = _extract_top_polygon(mesh, path)
     terrain, inset_distance = _inset_top(top, text_boundary_percent, path)
-    transform = _fit_transform(route, terrain, route_width, route_boundary_percent)
+    transform = _fit_transform(
+        route, terrain, route_width, route_boundary_percent, projected_envelope
+    )
     return CustomBase(mesh, top, terrain, inset_distance, top_z, transform)
 
 

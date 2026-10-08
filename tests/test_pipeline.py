@@ -21,6 +21,7 @@ def _config(tmp_path: Path, source: TopoSource) -> Config:
         gpx_file=tmp_path / "route.gpx",
         output=tmp_path / "route.3mf",
         topo_source=source,
+        route_boundary_percent=10.0,
         topo_dir=tmp_path / "asset",
     )
 
@@ -53,6 +54,7 @@ def test_conversion_uses_local_file_without_network(
             gpx_file=simple_gpx,
             output=output,
             topo_source="local",
+            route_boundary_percent=10.0,
             topo_file=topo_file,
             topo_dir=tmp_path / "asset",
             max_size=20.0,

@@ -13,7 +13,7 @@ from dotenv import find_dotenv, load_dotenv
 from gpx2stl.activity import ACTIVITY_EXTENSIONS
 from gpx2stl.dem import iter_local_geotiffs
 from gpx2stl.errors import Gpx2StlError
-from gpx2stl.models import Config
+from gpx2stl.models import Config, RouteBoundaryPercent
 from gpx2stl.pipeline import convert
 
 SETTING_KEYS = {
@@ -23,6 +23,7 @@ SETTING_KEYS = {
     "route_height",
     "topo",
     "route_boundary_percent",
+    "auto_boundary_max_distance_km",
     "text_boundary_percent",
     "shape",
     "text",
@@ -94,6 +95,12 @@ def _nonnegative(value: str) -> float:
     if not math.isfinite(parsed) or parsed < 0:
         raise argparse.ArgumentTypeError("must be a finite number greater than or equal to zero")
     return parsed
+
+
+def _route_boundary_percentage(value: str) -> RouteBoundaryPercent:
+    if value == "auto":
+        return "auto"
+    return _nonnegative(value)
 
 
 def _text_boundary_percentage(value: str) -> float:
@@ -219,9 +226,15 @@ def create_parser(settings: dict[str, Any] | None = None) -> argparse.ArgumentPa
     )
     parser.add_argument(
         "--route-boundary-percent",
-        type=_nonnegative,
-        default=10.0,
-        help="route padding inside the terrain in percent (default: 10)",
+        type=_route_boundary_percentage,
+        default=None,
+        help="route padding percent or auto mountain extent (default: auto with topo, 10 without)",
+    )
+    parser.add_argument(
+        "--auto-boundary-max-distance-km",
+        type=_positive,
+        default=20.0,
+        help="maximum auto discovery expansion beyond each route side in km (default: 20)",
     )
     parser.add_argument(
         "--shape",
@@ -357,6 +370,7 @@ def create_parser(settings: dict[str, Any] | None = None) -> argparse.ArgumentPa
         help="overwrite an existing output file",
     )
     parser.set_defaults(**(settings or {}))
+    parser.set_defaults(_route_boundary_explicit="route_boundary_percent" in (settings or {}))
     return parser
 
 
@@ -470,7 +484,12 @@ def config_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser) 
         route_width=args.route_width,
         route_height=args.route_height,
         topo=args.topo,
-        route_boundary_percent=args.route_boundary_percent,
+        route_boundary_percent=(
+            args.route_boundary_percent
+            if args.route_boundary_percent is not None
+            else "auto" if args.topo else 10.0
+        ),
+        auto_boundary_max_distance_km=args.auto_boundary_max_distance_km,
         text_boundary_percent=args.text_boundary_percent,
         shape=args.shape,
         text=text,
@@ -589,7 +608,7 @@ def _validate_setting_types(
     numeric = (
         "route_width",
         "route_height",
-        "route_boundary_percent",
+        "auto_boundary_max_distance_km",
         "text_boundary_percent",
         "text_height",
         "text_depth",
@@ -605,10 +624,21 @@ def _validate_setting_types(
     for name in ("topo", "use_3mf", "force"):
         if not isinstance(getattr(args, name), bool):
             parser.error(f"settings file value '{name}' must be true or false")
+    boundary = args.route_boundary_percent
+    if boundary is None:
+        if args._route_boundary_explicit:
+            parser.error("settings file value 'route_boundary_percent' must be a number or 'auto'")
+    elif boundary == "auto":
+        if not args.topo:
+            parser.error("--route-boundary-percent auto requires topography; enable --topo or use a numeric percentage")
+    elif isinstance(boundary, bool) or not isinstance(boundary, (int, float)):
+        parser.error("settings file value 'route_boundary_percent' must be a number or 'auto'")
+    elif not math.isfinite(boundary) or boundary < 0:
+        parser.error("--route-boundary-percent must be a finite nonnegative number or auto")
+    if args.auto_boundary_max_distance_km <= 0:
+        parser.error("--auto-boundary-max-distance-km must be greater than zero")
     if args.route_width <= 0 or args.route_height <= 0:
         parser.error("route dimensions must be greater than zero")
-    if args.route_boundary_percent < 0:
-        parser.error("--route-boundary-percent must be greater than or equal to zero")
     if args.text_height <= 0:
         parser.error("--text-height must be greater than zero")
     if args.text_depth <= 0:

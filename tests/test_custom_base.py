@@ -263,6 +263,7 @@ def _custom_geometry(
         gpx_file=simple_gpx,
         output=output,
         topo=topo,
+        route_boundary_percent=10.0,
         text=text,
         text_mode=text_mode,
         text_depth=text_depth,
@@ -368,6 +369,7 @@ def test_custom_base_supports_dem_relief(
         output=tmp_path / "unused.3mf",
         topo=True,
         base_stl=base,
+        route_boundary_percent=10.0,
     )
     geometry = build_geometry(
         route,

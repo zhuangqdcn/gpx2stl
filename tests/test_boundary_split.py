@@ -183,9 +183,12 @@ def test_retired_programmatic_settings_are_rejected(retired: str) -> None:
         create_parser({retired: 10})
 
 
-def test_config_exposes_only_split_boundary_fields(simple_gpx: Path) -> None:
-    config = Config(gpx_file=simple_gpx, output=simple_gpx.with_suffix(".3mf"))
-    assert config.route_boundary_percent == 10.0
+@pytest.mark.parametrize("topo", [False, True])
+def test_config_exposes_only_split_boundary_fields(simple_gpx: Path, topo: bool) -> None:
+    config = Config(gpx_file=simple_gpx, output=simple_gpx.with_suffix(".3mf"), topo=topo)
+    assert config.route_boundary_percent is None
+    assert config.resolved_route_boundary_percent == ("auto" if topo else 10.0)
+    assert config.auto_boundary_max_distance_km == 20.0
     assert config.text_boundary_percent == 15.0
     names = {field.name for field in fields(Config)}
     assert "boundary_percent" not in names
@@ -198,6 +201,7 @@ def test_config_exposes_only_split_boundary_fields(simple_gpx: Path) -> None:
 def test_cli_help_exposes_only_split_boundary_options() -> None:
     help_text = create_parser().format_help()
     assert "--route-boundary-percent" in help_text
+    assert "--auto-boundary-max-distance-km" in help_text
     assert "--text-boundary-percent" in help_text
     assert "--boundary-percent" not in help_text
     assert "--inner-size-percent" not in help_text
@@ -320,6 +324,7 @@ def test_generated_text_boundary_sets_per_side_inset(
     config = Config(
         gpx_file=simple_gpx, output=tmp_path / "unused.3mf",
         max_size=40, shape="circle", text="I", text_boundary_percent=text_boundary_percent,
+        route_boundary_percent=10,
     )
     captured = _capture_conversion(config, monkeypatch)
     diameter = 40 * (1 - 2 * text_boundary_percent / 100)
@@ -341,6 +346,7 @@ def test_without_text_text_boundary_does_not_change_geometry(
     config = Config(
         gpx_file=simple_gpx, output=tmp_path / "unused.3mf", max_size=40,
         base_stl=base, text_boundary_percent=0,
+        route_boundary_percent=10,
     )
     first = _capture_conversion(config, monkeypatch)
     second = _capture_conversion(replace(config, text_boundary_percent=49), monkeypatch)
