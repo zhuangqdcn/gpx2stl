@@ -6,7 +6,7 @@ import math
 import os
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 from dotenv import find_dotenv, load_dotenv
 
@@ -22,7 +22,8 @@ SETTING_KEYS = {
     "route_width",
     "route_height",
     "topo",
-    "boundary_percent",
+    "route_boundary_percent",
+    "text_boundary_percent",
     "shape",
     "text",
     "text_height",
@@ -31,7 +32,6 @@ SETTING_KEYS = {
     "text_align",
     "text_mode",
     "text_depth",
-    "inner_size_percent",
     "font_family",
     "font_file",
     "font_size",
@@ -60,6 +60,26 @@ PLATFORM_TOPO_KEYS = (
     "topo_dir_windows",
     "topo_dir_linux",
 )
+RETIRED_SETTINGS = {
+    "boundary_percent": "use route_boundary_percent for route padding and "
+    "text_boundary_percent for the text band",
+    "inner_size_percent": "use text_boundary_percent = (100 - inner_size_percent) / 2",
+}
+
+
+class _ArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> NoReturn:
+        for name, guidance in RETIRED_SETTINGS.items():
+            option = "--" + name.replace("_", "-")
+            if option in message:
+                message += f"; {option} is retired: {guidance}"
+        super().error(message)
+
+
+def _reject_retired_settings(settings: dict[str, Any]) -> None:
+    for name, guidance in RETIRED_SETTINGS.items():
+        if name in settings:
+            raise Gpx2StlError(f"Setting '{name}' is retired: {guidance}.")
 
 
 def _positive(value: str) -> float:
@@ -76,10 +96,12 @@ def _nonnegative(value: str) -> float:
     return parsed
 
 
-def _percentage_below_100(value: str) -> float:
+def _text_boundary_percentage(value: str) -> float:
     parsed = float(value)
-    if not math.isfinite(parsed) or parsed <= 0 or parsed >= 100:
-        raise argparse.ArgumentTypeError("must be a finite number greater than zero and below 100")
+    if not math.isfinite(parsed) or parsed < 0 or parsed >= 50:
+        raise argparse.ArgumentTypeError(
+            "must be a finite number greater than or equal to zero and below 50"
+        )
     return parsed
 
 
@@ -134,6 +156,7 @@ def load_settings(path: Path | None) -> dict[str, Any]:
         ) from exc
     if not isinstance(value, dict):
         raise Gpx2StlError(f"Settings file '{path}' must contain a JSON object.")
+    _reject_retired_settings(value)
     unknown = sorted(set(value) - SETTING_KEYS)
     if unknown:
         raise Gpx2StlError(
@@ -158,7 +181,8 @@ def load_settings(path: Path | None) -> dict[str, Any]:
 
 
 def create_parser(settings: dict[str, Any] | None = None) -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    _reject_retired_settings(settings or {})
+    parser = _ArgumentParser(
         prog="gpx2stl",
         description="Convert GPX or Garmin FIT activities into printable terrain models.",
     )
@@ -194,10 +218,10 @@ def create_parser(settings: dict[str, Any] | None = None) -> argparse.ArgumentPa
         help="include terrain (default: enabled)",
     )
     parser.add_argument(
-        "--boundary-percent",
+        "--route-boundary-percent",
         type=_nonnegative,
         default=10.0,
-        help="footprint padding percentage (default: 10)",
+        help="route padding inside the terrain in percent (default: 10)",
     )
     parser.add_argument(
         "--shape",
@@ -246,10 +270,10 @@ def create_parser(settings: dict[str, Any] | None = None) -> argparse.ArgumentPa
         help="embedded text depth in mm (default: 0.6)",
     )
     parser.add_argument(
-        "--inner-size-percent",
-        type=_percentage_below_100,
-        default=70.0,
-        help="terrain circle diameter as a percentage of model width (default: 70)",
+        "--text-boundary-percent",
+        type=_text_boundary_percentage,
+        default=15.0,
+        help="per-side text band inset in percent; ignored without text (default: 15)",
     )
     parser.add_argument(
         "--font-family",
@@ -420,12 +444,21 @@ def config_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser) 
             )
     if base_stl is None:
         available_route_width = (
-            args.max_size * args.inner_size_percent / 100.0
+            args.max_size * (1.0 - 2.0 * args.text_boundary_percent / 100.0)
             if text is not None
             else args.max_size
         )
         if text is None and args.shape == "hex":
             available_route_width *= math.sqrt(3.0) / 2.0
+        if (
+            text is not None
+            and args.shape == "hex"
+            and available_route_width >= args.max_size * math.sqrt(3.0) / 2.0
+        ):
+            parser.error(
+                "The terrain circle leaves no text band inside the hex frame; "
+                "increase --text-boundary-percent."
+            )
         if args.route_width >= available_route_width:
             parser.error(
                 "--route-width must be smaller than the available terrain width "
@@ -437,7 +470,8 @@ def config_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser) 
         route_width=args.route_width,
         route_height=args.route_height,
         topo=args.topo,
-        boundary_percent=args.boundary_percent,
+        route_boundary_percent=args.route_boundary_percent,
+        text_boundary_percent=args.text_boundary_percent,
         shape=args.shape,
         text=text,
         text_height=args.text_height,
@@ -446,7 +480,6 @@ def config_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser) 
         text_align=args.text_align,
         text_mode=args.text_mode,
         text_depth=args.text_depth,
-        inner_size_percent=args.inner_size_percent,
         font_family=args.font_family,
         font_file=font_file,
         font_size=args.font_size,
@@ -556,10 +589,10 @@ def _validate_setting_types(
     numeric = (
         "route_width",
         "route_height",
-        "boundary_percent",
+        "route_boundary_percent",
+        "text_boundary_percent",
         "text_height",
         "text_depth",
-        "inner_size_percent",
         "max_size",
         "base_height",
     )
@@ -574,8 +607,8 @@ def _validate_setting_types(
             parser.error(f"settings file value '{name}' must be true or false")
     if args.route_width <= 0 or args.route_height <= 0:
         parser.error("route dimensions must be greater than zero")
-    if args.boundary_percent < 0:
-        parser.error("--boundary-percent must be greater than or equal to zero")
+    if args.route_boundary_percent < 0:
+        parser.error("--route-boundary-percent must be greater than or equal to zero")
     if args.text_height <= 0:
         parser.error("--text-height must be greater than zero")
     if args.text_depth <= 0:
@@ -602,8 +635,10 @@ def _validate_setting_types(
         parser.error(
             "--text-end-gap must be a finite number greater than or equal to zero"
         )
-    if args.inner_size_percent <= 0 or args.inner_size_percent >= 100:
-        parser.error("--inner-size-percent must be greater than zero and below 100")
+    if args.text_boundary_percent < 0 or args.text_boundary_percent >= 50:
+        parser.error(
+            "--text-boundary-percent must be greater than or equal to zero and below 50"
+        )
     if args.terrain_height is not None:
         if isinstance(args.terrain_height, bool) or not isinstance(
             args.terrain_height, (int, float)

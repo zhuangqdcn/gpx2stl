@@ -28,7 +28,7 @@ def test_cli_defaults(simple_gpx: Path, monkeypatch: pytest.MonkeyPatch) -> None
     assert config.use_3mf is True
     assert config.route_width == 1.0
     assert config.route_height == 2.0
-    assert config.boundary_percent == 10.0
+    assert config.route_boundary_percent == 10.0
     assert config.shape == "square"
     assert config.text is None
     assert config.text_height == 1.0
@@ -37,7 +37,7 @@ def test_cli_defaults(simple_gpx: Path, monkeypatch: pytest.MonkeyPatch) -> None
     assert config.text_align == "center"
     assert config.text_mode == "raised"
     assert config.text_depth == 0.6
-    assert config.inner_size_percent == 70.0
+    assert config.text_boundary_percent == 15.0
     assert config.font_family == "DejaVu Sans"
     assert config.font_file is None
     assert config.font_size is None
@@ -342,7 +342,7 @@ def test_every_cli_parameter_overrides_settings_defaults() -> None:
         "route_width": 1.0,
         "route_height": 2.0,
         "topo": True,
-        "boundary_percent": 10.0,
+        "route_boundary_percent": 10.0,
         "shape": "square",
         "text": "SETTINGS",
         "text_height": 1.0,
@@ -351,7 +351,7 @@ def test_every_cli_parameter_overrides_settings_defaults() -> None:
         "text_align": "left",
         "text_mode": "raised",
         "text_depth": 0.5,
-        "inner_size_percent": 70.0,
+        "text_boundary_percent": 15.0,
         "font_family": "Settings Sans",
         "font_file": None,
         "font_size": 4.0,
@@ -381,7 +381,7 @@ def test_every_cli_parameter_overrides_settings_defaults() -> None:
             "--route-height",
             "4",
             "--no-topo",
-            "--boundary-percent",
+            "--route-boundary-percent",
             "25",
             "--shape",
             "hex",
@@ -399,8 +399,8 @@ def test_every_cli_parameter_overrides_settings_defaults() -> None:
             "embedded",
             "--text-depth",
             "0.8",
-            "--inner-size-percent",
-            "65",
+            "--text-boundary-percent",
+            "17.5",
             "--font-family",
             "CLI Sans",
             "--font-size",
@@ -438,7 +438,7 @@ def test_every_cli_parameter_overrides_settings_defaults() -> None:
     assert args.route_width == 3.0
     assert args.route_height == 4.0
     assert args.topo is False
-    assert args.boundary_percent == 25.0
+    assert args.route_boundary_percent == 25.0
     assert args.shape == "hex"
     assert args.text == "CLI"
     assert args.text_height == 1.5
@@ -447,7 +447,7 @@ def test_every_cli_parameter_overrides_settings_defaults() -> None:
     assert args.text_align == "right"
     assert args.text_mode == "embedded"
     assert args.text_depth == 0.8
-    assert args.inner_size_percent == 65.0
+    assert args.text_boundary_percent == 17.5
     assert args.font_family == "CLI Sans"
     assert args.font_file is None
     assert args.font_size == 5.0
@@ -695,14 +695,14 @@ def test_base_stl_is_validated(simple_gpx: Path, tmp_path: Path) -> None:
         )
 
 
-@pytest.mark.parametrize("value", ["0", "100"])
-def test_inner_size_percent_must_leave_a_frame(
+@pytest.mark.parametrize("value", ["-1", "50", "100"])
+def test_text_boundary_percent_must_leave_terrain(
     simple_gpx: Path, value: str
 ) -> None:
     parser = create_parser()
     with pytest.raises(SystemExit):
         parser.parse_args(
-            [str(simple_gpx), "--no-topo", "--inner-size-percent", value]
+            [str(simple_gpx), "--no-topo", "--text-boundary-percent", value]
         )
 
 
@@ -890,8 +890,8 @@ def test_route_width_must_fit_text_inset(simple_gpx: Path) -> None:
                     "20",
                     "--text",
                     "TRAIL",
-                    "--inner-size-percent",
-                    "70",
+                    "--text-boundary-percent",
+                    "15",
                     "--route-width",
                     "14",
                 ]

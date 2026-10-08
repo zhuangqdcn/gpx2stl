@@ -79,12 +79,12 @@ def _extract_top_polygon(mesh: trimesh.Trimesh, path: Path) -> tuple[Polygon, fl
 
 def _inset_top(
     top: Polygon,
-    boundary_percent: float,
+    text_boundary_percent: float,
     path: Path,
 ) -> tuple[Polygon, float]:
     minimum_x, minimum_y, maximum_x, maximum_y = top.bounds
     minimum_span = min(maximum_x - minimum_x, maximum_y - minimum_y)
-    distance = boundary_percent / 100.0 * minimum_span
+    distance = text_boundary_percent / 100.0 * minimum_span
     inset = top if distance == 0.0 else top.buffer(-distance, join_style="mitre")
     if not inset.is_valid:
         inset = shapely.make_valid(inset)
@@ -95,7 +95,7 @@ def _inset_top(
     ]
     if len(polygons) != 1:
         raise Gpx2StlError(
-            f"Insetting the top of base STL '{path}' by {boundary_percent:g}% "
+            f"Insetting the top of base STL '{path}' by {text_boundary_percent:g}% "
             "collapsed or disconnected the terrain region."
         )
     return shapely.orient_polygons(polygons[0]), distance
@@ -105,6 +105,7 @@ def _fit_transform(
     route: ProjectedRoute,
     terrain: Polygon,
     route_width: float,
+    route_boundary_percent: float,
 ) -> ModelTransform:
     route_minimum = route.points.min(axis=0)
     route_maximum = route.points.max(axis=0)
@@ -149,19 +150,35 @@ def _fit_transform(
         raise Gpx2StlError("Unable to fit the GPX route on the custom base top.")
     radius = max(float(np.max(np.linalg.norm(route.points - source_center, axis=1))), 1e-9)
     footprint = Footprint("circle", source_center, radius)
-    return ModelTransform(footprint, low * (1.0 - 1e-9), target_center)
+    scale = low * (1.0 - 1e-9) / (1.0 + route_boundary_percent / 100.0)
+    if scale <= 1e-12:
+        raise Gpx2StlError(
+            "The requested --route-boundary-percent leaves no usable route scale."
+        )
+    transform = ModelTransform(footprint, scale, target_center)
+    model_route = shapely.transform(
+        centered_route,
+        lambda coordinates: coordinates * scale + target_center,
+    )
+    if not clearance.covers(model_route):
+        raise Gpx2StlError(
+            "The padded route does not fit the custom terrain region; "
+            "reduce --route-boundary-percent."
+        )
+    return transform
 
 
 def prepare_custom_base(
     path: Path,
-    boundary_percent: float,
+    text_boundary_percent: float,
     route: ProjectedRoute,
     route_width: float,
+    route_boundary_percent: float = 0.0,
 ) -> CustomBase:
     mesh = _load_mesh(path)
     top, top_z = _extract_top_polygon(mesh, path)
-    terrain, inset_distance = _inset_top(top, boundary_percent, path)
-    transform = _fit_transform(route, terrain, route_width)
+    terrain, inset_distance = _inset_top(top, text_boundary_percent, path)
+    transform = _fit_transform(route, terrain, route_width, route_boundary_percent)
     return CustomBase(mesh, top, terrain, inset_distance, top_z, transform)
 
 

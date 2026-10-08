@@ -54,7 +54,9 @@ Copy `settings.example.json` beside your activity files as `.gpx2stl.settings.js
 cp settings.example.json /path/to/activities/.gpx2stl.settings.json
 ```
 
-JSON keys use the Python/long-option names with underscores, such as `route_width`, `boundary_percent`, `text_align`, `text_mode`, `text_depth`, `font_family`, `font_size`, `font_weight`, `font_style`, `inner_size_percent`, `topo_source`, and `topo_dir`. The positional `.gpx`/`.fit` file-or-directory input can also be defaulted with the backward-compatible `gpx_file` key. Use `use_3mf` for the `--3mf` / `--no-3mf` setting. Relative `font_file` paths are resolved from the settings file like other paths. Unknown keys, invalid JSON, or incorrect value types produce an explicit error. `.gpx2stl.settings.json` is ignored by Git; `settings.example.json` is tracked as a complete template.
+JSON keys use the Python/long-option names with underscores, such as `route_width`, `route_boundary_percent`, `text_boundary_percent`, `text_align`, `text_mode`, `text_depth`, `font_family`, `font_size`, `font_weight`, `font_style`, `topo_source`, and `topo_dir`. The positional `.gpx`/`.fit` file-or-directory input can also be defaulted with the backward-compatible `gpx_file` key. Use `use_3mf` for the `--3mf` / `--no-3mf` setting. Relative `font_file` paths are resolved from the settings file like other paths. Unknown keys, invalid JSON, or incorrect value types produce an explicit error. `.gpx2stl.settings.json` is ignored by Git; `settings.example.json` is tracked as a complete template.
+
+`--boundary-percent` / `boundary_percent` and `--inner-size-percent` / `inner_size_percent` are retired and rejected with migration guidance. For generated bases, rename the old boundary setting to `route_boundary_percent` and replace the old inner-size setting with `text_boundary_percent = (100 - inner_size_percent) / 2`. Thus an inner size of 70 becomes a text boundary of 15. For custom STL bases with text, the old boundary value controlled the text inset: move it to `text_boundary_percent` and use `route_boundary_percent: 0` to preserve the previous maximum route fit. Without text, custom terrain now uses the full top; text boundary is ignored.
 
 For terrain paths shared between Windows and Linux/WSL, settings support `topo_file_windows`, `topo_file_linux`, `topo_dir_windows`, and `topo_dir_linux`. A non-null key matching the current OS overrides the corresponding generic `topo_file` or `topo_dir`. A null or absent OS-specific key falls back to the generic value. Paths for the inactive OS are not interpreted or resolved.
 
@@ -145,7 +147,7 @@ python -m gpx2stl route.gpx --text "RIDGELINE" --font-family Arial --font-weight
 python -m gpx2stl route.gpx --text "RIDGELINE" --text-mode embedded --text-depth 0.8
 
 # Preserve an existing STL base and use its flat top
-python -m gpx2stl route.gpx --base-stl ./base.stl --boundary-percent 10
+python -m gpx2stl route.gpx --base-stl ./base.stl --text "TRAIL" --text-boundary-percent 15 --route-boundary-percent 10
 
 # Force one local GeoTIFF (no API key or network)
 python -m gpx2stl route.gpx --topo-source local --topo-file ./terrain.tif
@@ -176,7 +178,7 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 | `--route-width` | `1` mm | Printed route ribbon width. |
 | `--route-height` | `2` mm | Route height above terrain in topo mode. |
 | `--topo`, `--no-topo` | topo | Enable or disable terrain. |
-| `--boundary-percent` | `10` | Padding added around the minimum selected footprint. |
+| `--route-boundary-percent` | `10` | Nonnegative padding around the route inside the terrain, independent of the text band. |
 | `--shape` | `square` | `square`, `circle`, or flat-top `hex`. Squares remain north-up. |
 | `--text` | none | Text placed as one compact run along the flat frame, with its reserved seam centered at the bottom. |
 | `--text-height` | `1` mm | Raised text thickness above the frame. |
@@ -185,7 +187,7 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 | `--text-align` | `center` | Align the compact text run `left`, `center`, or `right` within the usable perimeter measured from the bottom seam. |
 | `--text-mode` | `raised` | Use `raised` text or an `embedded` flush inlay. Embedded text requires 3MF output. |
 | `--text-depth` | `0.6` mm | Depth of the cavity and flush text inlay in embedded mode. |
-| `--inner-size-percent` | `70` | Terrain inset diameter as a percentage of the outer model width; must be above 0 and below 100. |
+| `--text-boundary-percent` | `15` | Per-side text-band inset as a percentage of outer width (custom bases: smaller top dimension); from 0 inclusive to 50 exclusive. Ignored without text. |
 | `--font-family` | `DejaVu Sans` | Installed font family used for text. |
 | `--font-file` | none | Exact custom `.ttf`, `.otf`, or `.ttc` face for scripts not covered by an installed font; cannot be combined with family/weight/style options. |
 | `--font-size` | automatic | Requested glyph height in millimeters; omitted text is automatically fitted. |
@@ -211,7 +213,8 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 - Setting `--terrain-height` explicitly overrides true-scale relief and normalizes the DEM minimum-to-maximum range to that many millimeters.
 - Without topo, GPX or FIT altitude controls the route top at physical 1:20,000 vertical scale: 1,000 m becomes 50 mm. Internal missing elevations are interpolated; missing endpoint/all elevations are errors.
 - Square output is the smallest north-up square around the route before padding. Circle output uses the true minimum enclosing circle. Hex output uses the minimum translated flat-top regular hexagon.
-- When `--text` is present, `--max-size` controls the outer square, circle, or hex frame. Terrain and route are instead scaled into a centered circle controlled by `--inner-size-percent`; the rest of the frame stays flat at the base-top height.
+- When `--text` is present, `--max-size` controls the outer square, circle, or hex frame. The centered terrain circle has diameter `max_size × (1 - 2 × text_boundary_percent / 100)`; the rest of the frame stays flat at the base-top height. The default 15% text boundary retains a 70% terrain diameter. Hex frames need more than approximately 6.7% to leave a text band at their narrower sides; glyphs and margins may require more.
+- `--route-boundary-percent` pads the minimum route footprint before fitting it into the terrain: square side length is multiplied by `1 + 2 × route_boundary_percent / 100`, while circle/hex radius is multiplied by `1 + route_boundary_percent / 100`. Route-width clearance is added separately. Changing route boundary does not resize the text band. Without text, text boundary is ignored and the full generated footprint is available.
 - In 3MF output, the generated prism or supplied custom STL remains a separate `Base` object. Enabled relief is a separately watertight `Topography` object with a small intentional overlap into the base for reliable slicing. Disabling topo omits that object.
 - Text defaults to DejaVu Sans and is placed as a compact tangent run on the perimeter. `--text-align` positions that run in the usable perimeter after the bottom seam; it does not stretch inter-character spacing. Text is automatically fitted unless `--font-size` requests a glyph height. Select an installed family and variant with `--font-family`, `--font-weight`, and `--font-style`, or use `--font-file` to select one exact face. The bottom seam reserves eight font spaces by default; `--text-end-gap` adds an absolute gap and quoted leading/trailing spaces add font-relative gap. Missing fonts, variants, or glyphs are reported explicitly.
 - Raised text overlaps the base slightly for reliable slicing and is unioned into STL output. In 3MF-only embedded mode, a cavity is cut into the base and the separate text-material object fills it to a flush top surface; `--text-depth` controls the inlay depth.
@@ -220,19 +223,19 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 
 ### Custom STL bases
 
-`--base-stl` preserves the input mesh’s original position, orientation, and dimensions. STL files have no unit metadata, so the input is assumed to use millimeters and must already be oriented with Z up. Custom-base mode ignores `--shape`, `--base-height`, `--max-size`, and `--inner-size-percent` for base sizing and layout.
+`--base-stl` preserves the input mesh’s original position, orientation, and dimensions. STL files have no unit metadata, so the input is assumed to use millimeters and must already be oriented with Z up. Custom-base mode ignores `--shape`, `--base-height`, and `--max-size` for base sizing and layout.
 
 The input must be a finite, consistently wound, watertight, positive-volume mesh with exactly one connected horizontal upward-facing region at its global maximum Z. That top region may be concave and may contain holes. Models with only curved/sloped maxima or multiple disconnected highest regions are rejected.
 
-The terrain region follows the exact top outline after an inward offset:
+With text, the terrain region follows the exact top outline after an inward offset:
 
 ```text
-offset distance = boundary-percent / 100 × min(top width, top height)
+offset distance = text-boundary-percent / 100 × min(top width, top height)
 ```
 
-The GPX remains north-up, is centered on the usable inset, and receives the largest uniform scale whose complete route-width ribbon fits inside the region without crossing concave edges or holes. The custom STL itself is never resized by `--max-size`. DEM bounds are derived from this fitted custom region.
+Without text, there is no text inset and terrain uses the full top. The GPX remains north-up and is centered on the usable terrain. Its maximum fitting scale reserves half the route width at the edges, then is divided by `1 + route_boundary_percent / 100` to add independent route padding. The padded route is checked for containment; incompatible concave edges or holes produce an explicit error. Increasing route boundary leaves the terrain region and text band unchanged. The custom STL itself is never resized by `--max-size`. DEM bounds are derived from the terrain region.
 
-When `--text` is supplied, the largest fitting glyph height is selected unless `--font-size` is set. The compact run stays tangent to the continuous perimeter and follows `--text-align`. The head/tail seam remains centered at the bottom and reserves eight font spaces plus `--text-end-gap` and any quoted leading/trailing spaces. `--text-margin` reserves the requested minimum clearance in millimeters from both the outer shape boundary and the inner terrain boundary. Every glyph must fit entirely in the remaining area. Increase `--boundary-percent`, reduce the font size, margins, or gap, shorten the text, or choose a narrower font if the border cannot contain it.
+When `--text` is supplied, the largest fitting glyph height is selected unless `--font-size` is set. The compact run stays tangent to the continuous perimeter and follows `--text-align`. The head/tail seam remains centered at the bottom and reserves eight font spaces plus `--text-end-gap` and any quoted leading/trailing spaces. `--text-margin` reserves the requested minimum clearance in millimeters from both the outer shape boundary and the inner terrain boundary. Every glyph must fit entirely in the remaining area. Increase `--text-boundary-percent`, reduce the font size, margins, or gap, shorten the text, or choose a narrower font if the border cannot contain it.
 
 ## Topography source behavior
 
@@ -332,7 +335,9 @@ OPENTOPOGRAPHY_API_KEY=你的API密钥
 cp settings.example.json /path/to/activities/.gpx2stl.settings.json
 ```
 
-JSON 键使用 Python/长参数对应的下划线名称，例如 `route_width`、`boundary_percent`、`text_margin`、`text_end_gap`、`inner_size_percent`、`topo_source` 和 `topo_dir`。也可用向后兼容的 `gpx_file` 键设置默认 `.gpx`/`.fit` 文件或目录；`--3mf` / `--no-3mf` 对应 `use_3mf`。相对 `font_file` 路径与其他路径一样，以设置文件所在目录为基准解析。未知键、无效 JSON 或错误的数据类型都会产生明确错误。`.gpx2stl.settings.json` 已被 Git 忽略，而完整模板 `settings.example.json` 会纳入版本控制。
+JSON 键使用 Python/长参数对应的下划线名称，例如 `route_width`、`route_boundary_percent`、`text_boundary_percent`、`text_margin`、`text_end_gap`、`topo_source` 和 `topo_dir`。也可用向后兼容的 `gpx_file` 键设置默认 `.gpx`/`.fit` 文件或目录；`--3mf` / `--no-3mf` 对应 `use_3mf`。相对 `font_file` 路径与其他路径一样，以设置文件所在目录为基准解析。未知键、无效 JSON 或错误的数据类型都会产生明确错误。`.gpx2stl.settings.json` 已被 Git 忽略，而完整模板 `settings.example.json` 会纳入版本控制。
+
+`--boundary-percent` / `boundary_percent` 和 `--inner-size-percent` / `inner_size_percent` 已停用，使用时会报错并提示迁移方法。生成底座时，将旧边界键改为 `route_boundary_percent`，并按 `text_boundary_percent = (100 - inner_size_percent) / 2` 换算旧内圈尺寸；例如 70 对应文字边界 15。带文字的自定义 STL 底座中，旧边界值控制文字内缩，应移至 `text_boundary_percent`，并设置 `route_boundary_percent: 0` 以保留原来的最大路线缩放。无文字时，自定义地形现在使用完整顶面，文字边界被忽略。
 
 为了在 Windows 与 Linux/WSL 之间共享地形设置，可使用 `topo_file_windows`、`topo_file_linux`、`topo_dir_windows` 和 `topo_dir_linux`。当前系统对应的非空键会覆盖通用 `topo_file` 或 `topo_dir`；对应键为空或不存在时会回退到通用值。程序不会解释或解析另一个操作系统的路径。
 
@@ -423,7 +428,7 @@ python -m gpx2stl route.gpx --text "RIDGELINE" --font-family Arial --font-weight
 python -m gpx2stl route.gpx --text "RIDGELINE" --text-mode embedded --text-depth 0.8
 
 # 保留现有 STL 底座并使用其平坦顶面
-python -m gpx2stl route.gpx --base-stl ./base.stl --boundary-percent 10
+python -m gpx2stl route.gpx --base-stl ./base.stl --text "TRAIL" --text-boundary-percent 15 --route-boundary-percent 10
 
 # 强制使用一个本地 GeoTIFF（无需 API Key 或网络）
 python -m gpx2stl route.gpx --topo-source local --topo-file ./terrain.tif
@@ -454,7 +459,7 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 | `--route-width` | `1` mm | 打印路线带宽度。 |
 | `--route-height` | `2` mm | 启用地形时路线高出地形的高度。 |
 | `--topo`, `--no-topo` | 启用 | 启用或禁用地形。 |
-| `--boundary-percent` | `10` | 在所选最小外形周围增加的边界百分比。 |
+| `--route-boundary-percent` | `10` | 地形内部路线周围的非负边界百分比，与文字边框独立。 |
 | `--shape` | `square` | `square`（方形）、`circle`（圆形）或平顶 `hex`（正六边形）；方形保持正北朝上。 |
 | `--text` | 无 | 沿平坦外框放置的紧凑文字段；预留接缝位于底部中央。 |
 | `--text-height` | `1` mm | 文字高出外框的厚度。 |
@@ -463,7 +468,7 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 | `--text-align` | `center` | 相对底部接缝在可用周长内将紧凑文字段设为 `left`、`center` 或 `right`。 |
 | `--text-mode` | `raised` | 使用 `raised` 凸起文字或 `embedded` 齐平嵌件；嵌入模式仅支持 3MF。 |
 | `--text-depth` | `0.6` mm | 嵌入模式中文字凹槽和齐平嵌件的深度。 |
-| `--inner-size-percent` | `70` | 圆形地形区域直径占模型外宽的百分比；必须大于 0 且小于 100。 |
+| `--text-boundary-percent` | `15` | 每侧文字边框内缩占外宽的百分比（自定义底座使用顶面较小尺寸）；大于等于 0 且小于 50，无文字时忽略。 |
 | `--font-family` | `DejaVu Sans` | 用于文字的已安装字体族。 |
 | `--font-file` | 无 | 精确指定自定义 `.ttf`、`.otf` 或 `.ttc` 字体文件；不可与字体族、粗细或样式选项组合。 |
 | `--font-size` | 自动 | 字形高度（毫米）；省略时自动适配。 |
@@ -489,7 +494,8 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 - 显式设置 `--terrain-height` 会覆盖真实比例，将 DEM 最低点到最高点的高度差归一化到指定毫米数。
 - 禁用地形时，路线顶部采用 GPX 或 FIT 高程和真实的 1:20,000 垂直比例：1,000 m 对应 50 mm。内部缺失高程会插值；端点或全部高程缺失会报错。
 - 方形为加边界前包围路线的最小正北方形；圆形为真实最小包围圆；六边形为可平移的最小平顶正六边形。
-- 指定 `--text` 后，`--max-size` 控制方形、圆形或六边形外框尺寸。地形和路线会缩放到由 `--inner-size-percent` 控制的居中圆形区域，其余外框保持在底座顶面的平坦高度。
+- 指定 `--text` 后，`--max-size` 控制方形、圆形或六边形外框尺寸。居中地形圆的直径为 `max_size × (1 - 2 × text_boundary_percent / 100)`，其余外框保持在底座顶面的平坦高度。默认文字边界 15% 保留原来的 70% 地形直径。六边形需要大于约 6.7% 才能在较窄两侧留出文字带；字形及边距可能需要更多空间。
+- `--route-boundary-percent` 在缩放前给最小路线外形增加边界：方形边长乘以 `1 + 2 × route_boundary_percent / 100`，圆形或六边形半径乘以 `1 + route_boundary_percent / 100`，路线宽度另行预留。改变路线边界不会改变文字带。无文字时忽略文字边界，使用完整生成外形。
 - 在 3MF 输出中，生成的棱柱或提供的自定义 STL 会保留为独立的 `Base` 对象。启用的起伏地形是另一个独立水密的 `Topography` 对象，并略微伸入底座以确保切片可靠。禁用地形时不会生成该对象。
 - 文字默认使用 DejaVu Sans，并沿周长切线方向形成紧凑文字段。`--text-align` 相对底部接缝定位文字段，不会拉伸字符间距。省略 `--font-size` 时自动适配字高；可用字体族、粗细和样式选项选择已安装变体，或用 `--font-file` 精确指定一个字体文件。缺少字体、变体或字形时会明确报错。
 - 凸起文字会略微伸入底座，并在 STL 输出中与其他部分合并。仅限 3MF 的嵌入模式会在底座切出凹槽，并以独立文字材料对象填充至表面齐平；`--text-depth` 控制嵌件深度。
@@ -497,19 +503,19 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 
 ### 自定义 STL 底座
 
-`--base-stl` 会保留输入网格原有的位置、方向和尺寸。STL 文件不包含单位信息，因此程序假定输入使用毫米，并且已按 Z 轴朝上放置。自定义底座模式在确定底座尺寸和布局时忽略 `--shape`、`--base-height`、`--max-size` 和 `--inner-size-percent`。
+`--base-stl` 会保留输入网格原有的位置、方向和尺寸。STL 文件不包含单位信息，因此程序假定输入使用毫米，并且已按 Z 轴朝上放置。自定义底座模式在确定底座尺寸和布局时忽略 `--shape`、`--base-height` 和 `--max-size`。
 
 输入必须是顶点有限、绕序一致、水密且体积为正的网格，并且在全局最高 Z 处必须恰好有一个相连、水平且朝上的顶面区域。该区域可以是凹多边形，也可以包含孔洞。只有曲面/斜面最高点或有多个不相连最高区域的模型会被拒绝。
 
-地形区域使用顶面的精确轮廓，并按以下距离向内缩：
+有文字时，地形区域使用顶面的精确轮廓，并按以下距离向内缩：
 
 ```text
-内缩距离 = boundary-percent / 100 × min(顶面宽度, 顶面高度)
+内缩距离 = text-boundary-percent / 100 × min(顶面宽度, 顶面高度)
 ```
 
-GPX 保持正北朝上，以可用内缩区域为中心，并采用能使完整路线宽度带位于区域内、不穿过凹边或孔洞的最大等比例缩放。自定义 STL 本身绝不会被 `--max-size` 缩放。DEM 请求范围根据拟合后的自定义区域计算。
+无文字时不进行文字内缩，地形使用完整顶面。GPX 保持正北朝上，并以可用地形区域为中心。先求出在边缘预留半个路线宽度后的最大缩放，再除以 `1 + route_boundary_percent / 100`，以添加独立的路线边界。程序会检查缩放后的路线是否完整位于可用区域内；与凹边或孔洞冲突时会明确报错。增大路线边界不会改变地形区域或文字带。自定义 STL 本身绝不会被 `--max-size` 缩放。DEM 请求范围根据地形区域计算。
 
-指定 `--text` 后，除非设置 `--font-size`，程序会选择可容纳的最大字高。紧凑文字段与连续边框路径相切，并遵循 `--text-align`。文字首尾接缝固定在底部中央，并保留八个字体空格、`--text-end-gap` 以及引号内首尾空格的总间距。`--text-margin` 可指定文字与外侧形状边界及内侧地形边界之间的最小毫米间距。每个字形都必须完整位于剩余区域内。如果空间不足，请增大 `--boundary-percent`，减小字高、文字边距或接缝，缩短文字或选择更窄的字体。
+指定 `--text` 后，除非设置 `--font-size`，程序会选择可容纳的最大字高。紧凑文字段与连续边框路径相切，并遵循 `--text-align`。文字首尾接缝固定在底部中央，并保留八个字体空格、`--text-end-gap` 以及引号内首尾空格的总间距。`--text-margin` 可指定文字与外侧形状边界及内侧地形边界之间的最小毫米间距。每个字形都必须完整位于剩余区域内。如果空间不足，请增大 `--text-boundary-percent`，减小字高、文字边距或接缝，缩短文字或选择更窄的字体。
 
 ## 地形数据源规则
 

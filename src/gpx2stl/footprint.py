@@ -117,10 +117,10 @@ def footprint_vertices(footprint: Footprint) -> NDArray[np.float64]:
 def create_footprint(
     points: NDArray[np.float64],
     shape: Shape,
-    boundary_percent: float,
+    route_boundary_percent: float,
     minimum_diameter: float,
 ) -> Footprint:
-    padding = boundary_percent / 100.0
+    padding = route_boundary_percent / 100.0
     if shape == "circle":
         center, radius = minimum_enclosing_circle(points)
         radius *= 1.0 + padding

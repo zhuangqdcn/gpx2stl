@@ -23,7 +23,8 @@ class Config:
     route_width: float = 1.0
     route_height: float = 2.0
     topo: bool = True
-    boundary_percent: float = 10.0
+    route_boundary_percent: float = 10.0
+    text_boundary_percent: float = 15.0
     shape: Shape = "square"
     text: str | None = None
     text_height: float = 1.0
@@ -32,7 +33,6 @@ class Config:
     text_align: TextAlign = "center"
     text_mode: TextMode = "raised"
     text_depth: float = 0.6
-    inner_size_percent: float = 70.0
     font_family: str = "DejaVu Sans"
     font_file: Path | None = None
     font_size: float | None = None
@@ -49,6 +49,12 @@ class Config:
     dem_type: str | None = None
     api_key: str | None = None
     force: bool = False
+
+    @property
+    def terrain_size(self) -> float:
+        if self.text is None:
+            return self.max_size
+        return self.max_size * (1.0 - 2.0 * self.text_boundary_percent / 100.0)
 
 
 @dataclass(frozen=True)

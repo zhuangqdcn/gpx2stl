@@ -88,9 +88,10 @@ def convert(
         progress(f"Loading and validating custom base STL from {config.base_stl}")
         custom_base = prepare_custom_base(
             config.base_stl,
-            config.boundary_percent,
+            config.text_boundary_percent if config.text is not None else 0.0,
             route,
             config.route_width,
+            config.route_boundary_percent,
         )
         footprint = custom_base.transform.footprint
         transform = custom_base.transform
@@ -101,17 +102,13 @@ def convert(
             f"{custom_base.top_z:.1f} mm"
         )
     else:
-        terrain_size = (
-            config.max_size * config.inner_size_percent / 100.0
-            if config.text is not None
-            else config.max_size
-        )
+        terrain_size = config.terrain_size
         footprint_shape = "circle" if config.text is not None else config.shape
         minimum_footprint = config.route_width / terrain_size
         footprint = create_footprint(
             route.points,
             footprint_shape,
-            config.boundary_percent,
+            config.route_boundary_percent,
             minimum_footprint,
         )
         footprint = add_route_clearance(footprint, config.route_width, terrain_size)

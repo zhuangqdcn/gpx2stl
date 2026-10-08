@@ -732,6 +732,11 @@ def _generated_text_layout(config: Config, inner_radius: float) -> _PerimeterTex
         else config.max_size / 2.0
     )
     frame_width = outer_apothem - inner_radius
+    if frame_width <= 0.0:
+        raise Gpx2StlError(
+            "The terrain circle leaves no text band inside the generated frame; "
+            "increase --text-boundary-percent."
+        )
     margin = (
         config.text_margin
         if config.text_margin is not None
@@ -746,7 +751,7 @@ def _generated_text_layout(config: Config, inner_radius: float) -> _PerimeterTex
     if text_area.is_empty:
         raise Gpx2StlError(
             "The text frame cannot fit the requested --text-margin; reduce "
-            "--inner-size-percent or --text-margin."
+            "--text-margin or increase --text-boundary-percent."
         )
     centerline_geometry = outer_polygon.buffer(
         -frame_width / 2.0,
@@ -761,7 +766,7 @@ def _generated_text_layout(config: Config, inner_radius: float) -> _PerimeterTex
         outer_polygon=outer_polygon,
         available_height=available_height,
         description="generated text frame",
-        fit_guidance="reduce --inner-size-percent",
+        fit_guidance="increase --text-boundary-percent",
     )
 
 
@@ -797,12 +802,12 @@ def _custom_text_layout(
     if text_area.is_empty:
         raise Gpx2StlError(
             "The custom base margin cannot fit the requested --text-margin; "
-            "increase --boundary-percent or reduce --text-margin."
+            "increase --text-boundary-percent or reduce --text-margin."
         )
     if custom_base.inset_distance <= 1e-6:
         raise Gpx2StlError(
             "The custom base has no flat top border for text; increase "
-            "--boundary-percent."
+            "--text-boundary-percent."
         )
     centerline_geometry = custom_base.top_polygon.buffer(
         -custom_base.inset_distance / 2.0,
@@ -821,7 +826,7 @@ def _custom_text_layout(
     if available_width <= 0.0:
         raise Gpx2StlError(
             "The custom base margin cannot fit the requested --text-margin; "
-            "increase --boundary-percent or reduce --text-margin."
+            "increase --text-boundary-percent or reduce --text-margin."
         )
     return _perimeter_text_layout(
         config,
@@ -830,7 +835,7 @@ def _custom_text_layout(
         outer_polygon=custom_base.top_polygon,
         available_height=available_width,
         description="custom base margin",
-        fit_guidance="increase --boundary-percent",
+        fit_guidance="increase --text-boundary-percent",
     )
 
 

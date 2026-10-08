@@ -129,7 +129,7 @@ def _text_geometry(
         text_align=text_align,
         text_mode=text_mode,
         text_depth=text_depth,
-        inner_size_percent=70.0,
+        text_boundary_percent=15.0,
         font_size=font_size,
         use_3mf=use_3mf,
         max_size=20.0,
@@ -280,7 +280,7 @@ def test_text_margin_controls_generated_frame_clearance(
     )
     assert geometry.text is not None
     radii = np.linalg.norm(geometry.text.vertices[:, :2], axis=1)
-    inner_radius = config.max_size * config.inner_size_percent / 200.0
+    inner_radius = config.max_size * (1.0 - 2.0 * config.text_boundary_percent / 100.0) / 2.0
     assert np.min(radii) >= inner_radius + config.text_margin - 1e-7
     assert np.max(radii) <= config.max_size / 2.0 - config.text_margin + 1e-7
 
