@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import lib3mf
 import numpy as np
 import pytest
+import shapely
 import trimesh
 from matplotlib.textpath import TextToPath
 from matplotlib.textpath import TextPath
@@ -21,12 +22,16 @@ from gpx2stl.footprint import (
 )
 from gpx2stl.gpx import interpolate_elevations, project_paths, read_gpx
 from gpx2stl.mesh import (
+    _building_mesh,
+    _compensate_structure_footprint,
     _font_properties,
     _generated_text_layout,
+    _resolve_structure_overlaps,
+    _structure_printable_clip,
     _variable_extrusion,
     build_geometry,
 )
-from gpx2stl.models import Config, Shape
+from gpx2stl.models import Config, Footprint, ModelTransform, Shape
 
 
 class SlopedDem:
@@ -64,6 +69,130 @@ def test_variable_extrusion_normalizes_microscopic_boundary_clearance() -> None:
 
     assert mesh.is_volume
     assert mesh.volume == pytest.approx(polygon.area, abs=1e-6)
+
+
+def test_nozzle_compensation_expands_and_groups_structure_footprints() -> None:
+    clip = box(-1.0, -1.0, 2.0, 2.0)
+    left = box(0.0, 0.0, 0.1, 1.0)
+    right = box(0.25, 0.0, 0.35, 1.0)
+
+    detailed = _compensate_structure_footprint(left, None, None)
+    compensated_left = _compensate_structure_footprint(left, 0.2, clip)
+    compensated_right = _compensate_structure_footprint(right, 0.2, clip)
+
+    assert detailed.equals_exact(left, 0.0)
+    assert compensated_left.bounds == pytest.approx((-0.1, -0.1, 0.2, 1.1))
+    assert compensated_left.bounds[2] - compensated_left.bounds[0] >= 0.2
+    assert compensated_left.intersects(compensated_right)
+
+
+def test_nozzle_compensation_closes_small_holes_and_clips_to_terrain() -> None:
+    structure = box(0.0, 0.0, 1.0, 1.0).difference(
+        box(0.45, 0.45, 0.55, 0.55)
+    )
+
+    compensated = _compensate_structure_footprint(
+        structure,
+        0.2,
+        box(0.0, 0.0, 0.9, 0.9),
+    )
+
+    assert compensated.bounds == pytest.approx((0.0, 0.0, 0.9, 0.9))
+    assert isinstance(compensated, Polygon)
+    assert len(compensated.interiors) == 0
+
+
+def test_grouped_structures_preserve_stepped_heights(
+    simple_gpx: Path, tmp_path: Path
+) -> None:
+    footprint = Footprint(
+        "square",
+        np.zeros(2, dtype=np.float64),
+        5.0,
+    )
+    transform = ModelTransform(footprint, 1.0)
+    config = Config(
+        gpx_file=simple_gpx,
+        output=tmp_path / "unused.3mf",
+        mode="city",
+        building_height_scale=1.0,
+        nozzle_diameter=0.2,
+    )
+    buildings = (
+        SimpleNamespace(polygon=box(0.0, 0.0, 0.1, 1.0), height_m=1.0),
+        SimpleNamespace(polygon=box(0.25, 0.0, 0.35, 1.0), height_m=2.0),
+    )
+
+    mesh = _building_mesh(
+        buildings,
+        transform,
+        lambda points: np.zeros(len(points)),
+        config,
+        box(-5.0, -5.0, 5.0, 5.0),
+    )
+
+    assert mesh is not None and mesh.is_volume
+    assert mesh.bounds[:, 0] == pytest.approx([-0.1, 0.45])
+    assert np.any(np.isclose(mesh.vertices[:, 2], 1.0))
+    assert np.any(np.isclose(mesh.vertices[:, 2], 2.0))
+
+
+def test_structure_overlap_is_assigned_to_taller_step() -> None:
+    short = box(0.0, 0.0, 1.0, 1.0)
+    tall = box(0.5, 0.0, 1.5, 1.0)
+
+    resolved = _resolve_structure_overlaps(
+        [(short, 1.0), (tall, 2.0)]
+    )
+
+    tall_parts = [polygon for polygon, height in resolved if height == 2.0]
+    short_parts = [polygon for polygon, height in resolved if height == 1.0]
+    assert shapely.union_all(tall_parts).equals(tall)
+    assert shapely.union_all(short_parts).area == pytest.approx(0.5)
+    assert sum(polygon.area for polygon, _ in resolved) == pytest.approx(
+        shapely.union_all([short, tall]).area
+    )
+    for index, (polygon, _) in enumerate(resolved):
+        for other, _ in resolved[index + 1 :]:
+            assert polygon.intersection(other).area == pytest.approx(0.0)
+
+
+def test_structure_overlap_discards_sub_precision_remainders() -> None:
+    almost_covered = box(0.0, 0.0, 1.0000004, 1.0)
+    taller = box(0.0, 0.0, 1.0, 1.0)
+
+    resolved = _resolve_structure_overlaps(
+        [(almost_covered, 1.0), (taller, 2.0)]
+    )
+
+    assert len(resolved) == 1
+    assert resolved[0][1] == 2.0
+    assert resolved[0][0].equals(taller)
+
+
+def test_structure_printable_clip_supports_circle_and_custom_base() -> None:
+    footprint = Footprint(
+        "circle",
+        np.array([10.0, 20.0]),
+        5.0,
+    )
+    transform = ModelTransform(
+        footprint,
+        2.0,
+        np.array([3.0, 4.0]),
+    )
+
+    circle = _structure_printable_clip(footprint, transform, None)
+    custom_polygon = box(-2.0, -1.0, 2.0, 1.0)
+    custom = _structure_printable_clip(
+        footprint,
+        transform,
+        SimpleNamespace(terrain_polygon=custom_polygon),
+    )
+
+    assert circle.bounds == pytest.approx((-7.0, -6.0, 13.0, 14.0))
+    assert circle.area == pytest.approx(np.pi * 100.0, rel=5e-4)
+    assert custom.equals_exact(custom_polygon, 0.0)
 
 
 def test_no_topo_geometry_is_watertight(simple_gpx: Path, tmp_path: Path) -> None:

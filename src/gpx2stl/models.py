@@ -63,6 +63,7 @@ class Config:
     city_dir: Path = Path("asset/city")
     building_default_height: float = 10.0
     building_height_scale: float = 5.0
+    nozzle_diameter: float | None = None
     water_depth: float = 0.4
     dem_type: str | None = None
     api_key: str | None = None

@@ -55,7 +55,7 @@ Copy `settings.example.json` beside your activity files as `.gpx2stl.settings.js
 cp settings.example.json /path/to/activities/.gpx2stl.settings.json
 ```
 
-JSON keys use the Python/long-option names with underscores, such as `mode`, `route_width`, `route_depth`, `road_snap_distance`, `route_boundary_percent`, `text_mode`, `topo_source`, `topo_dir`, `city_dir`, `building_default_height`, and `building_height_scale`. The positional `.gpx`/`.fit` file-or-directory input can also be defaulted with the backward-compatible `gpx_file` key. Use `use_3mf` for the `--3mf` / `--no-3mf` setting. Relative `font_file`, terrain, and city-cache paths are resolved from the settings file. Unknown keys, invalid JSON, or incorrect value types produce an explicit error. `.gpx2stl.settings.json` is ignored by Git; `settings.example.json` is tracked as a complete template.
+JSON keys use the Python/long-option names with underscores, such as `mode`, `route_width`, `route_depth`, `road_snap_distance`, `route_boundary_percent`, `text_mode`, `topo_source`, `topo_dir`, `city_dir`, `building_default_height`, `building_height_scale`, and `nozzle_diameter`. The positional `.gpx`/`.fit` file-or-directory input can also be defaulted with the backward-compatible `gpx_file` key. Use `use_3mf` for the `--3mf` / `--no-3mf` setting. Relative `font_file`, terrain, and city-cache paths are resolved from the settings file. Unknown keys, invalid JSON, or incorrect value types produce an explicit error. `.gpx2stl.settings.json` is ignored by Git; `settings.example.json` is tracked as a complete template.
 
 Directional route padding uses a JSON array in north, east, south, west order, for example `"route_boundary_percent": [10, 15, 10, 15]`. A scalar number retains symmetric padding. `"auto"` resolves to symmetric 5% padding in city mode and terrain-aware search in other modes; `"search"` explicitly forces terrain-aware discovery in any mode.
 
@@ -142,6 +142,9 @@ python -m gpx2stl route.gpx --mode city
 
 # City model with 10% north/south and 20% east/west route padding
 python -m gpx2stl route.gpx --mode city --route-boundary-percent 10,20,10,20
+
+# Compensate buildings and bridge decks for a 0.2 mm nozzle
+python -m gpx2stl route.gpx --mode city --nozzle-diameter 0.2
 
 # Disable road matching while retaining buildings and the embedded route
 python -m gpx2stl route.gpx --mode city --road-snap-distance 0
@@ -230,6 +233,7 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 | `--city-dir` | `./asset/city` | Persistent cache for fixed-grid Overpass JSON tiles. Existing nonempty tiles are reused indefinitely; delete them explicitly to refresh OSM data. |
 | `--building-default-height` | `10` m | Building height when OSM has neither a valid `height` nor `building:levels` value. |
 | `--building-height-scale` | `5` | Multiplier applied after building and bridge height is converted with the model's horizontal map scale. Use `1` for true scale. |
+| `--nozzle-diameter` | none | Optional nozzle diameter in model millimeters for city buildings and bridge decks. A value such as `0.2` expands each footprint outward by half that amount, making sub-nozzle features wider and grouping gaps smaller than the nozzle. Omit it for maximum source detail. |
 | `--water-depth` | `0.4` mm | Depth of the flush water cavity/inlay in city mode; must be smaller than the base or custom-base thickness. |
 | `--dem-type` | automatic | OpenTopography DEM identifier override. |
 | `--api-key` | environment | OpenTopography API key override. |
@@ -245,6 +249,7 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 - In city mode, route points are matched only to connected OSM road geometry within `--road-snap-distance`; implausible, disconnected, or out-of-range spans retain their GPX geometry. If matching would leave the printable footprint, the original route is used. Buildings that overlap an unmatched route remain complete and hide that route section.
 - City data uses a fixed 0.01° cache grid at every footprint size. Missing tiles are downloaded sequentially with at least two seconds between requests; cached tiles do not wait or contact the service.
 - City buildings use OSM `height`, then `building:levels × 3 m`, then `--building-default-height`. Bridge-tagged ways become printable decks using OSM width, lane-derived width, or a road/rail fallback. Heights use the horizontal model scale and `--building-height-scale`; roofs and bridge decks are flat. The default `5×` vertical multiplier keeps short structures visible on city-scale models; use `1` for true scale. The route is a separate 3MF object filling a matching terrain/base cavity with its top flush to the terrain.
+- `--nozzle-diameter` is an optional geometry compensation, not a slicer setting. It offsets every building and bridge footprint outward by half the specified model-space diameter. Features narrower than the nozzle become wider, gaps and courtyards below the diameter close, and nearby structures join into printable same-material groups without overlapping volumes; taller structures own shared footprint area so grouped structures retain stepped roofs/decks. The progress log reports the equivalent source-meter offset at the current model scale. Compensation is clipped to the printable terrain boundary and does not reshape routes, water, terrain, or text, although an expanded structure can cover more of a route or water inlay. Omit the option (or use JSON `null`) to preserve the most detailed OSM geometry.
 - City water includes OSM lakes, ponds, reservoirs, basins, riverbanks, width-tagged or inferred rivers/streams/canals, and the sea-facing side of directed coastlines. It is clipped to the printable terrain and exported as a separate flush `Water` inlay; `--water-depth` controls its cavity depth. The route takes material priority where it crosses water.
 - In numeric boundary mode, square output is the smallest north-up square around the route before padding. Circle output uses the true minimum enclosing circle. Hex output uses the minimum translated flat-top regular hexagon. Search mode fits the eight-direction geographic selection polygon together with the route.
 - Four-value padding expands the route bounding box independently: N/S percentages use its north-south span, while E/W percentages use its east-west span. The selected square, circle, or hex is then fitted around the padded rectangle. City mode defaults to `10,10,10,10`; a degenerate axis receives no percentage padding on that axis, but printable route-width clearance still applies.
@@ -427,7 +432,7 @@ OPENTOPOGRAPHY_API_KEY=你的API密钥
 cp settings.example.json /path/to/activities/.gpx2stl.settings.json
 ```
 
-JSON 键使用 Python/长参数对应的下划线名称，例如 `mode`、`route_width`、`route_depth`、`road_snap_distance`、`route_boundary_percent`、`topo_source`、`topo_dir`、`city_dir`、`building_default_height` 和 `building_height_scale`。也可用向后兼容的 `gpx_file` 键设置默认 `.gpx`/`.fit` 文件或目录；`--3mf` / `--no-3mf` 对应 `use_3mf`。相对字体、地形和城市缓存路径都以设置文件所在目录为基准解析。未知键、无效 JSON 或错误的数据类型都会产生明确错误。`.gpx2stl.settings.json` 已被 Git 忽略，而完整模板 `settings.example.json` 会纳入版本控制。
+JSON 键使用 Python/长参数对应的下划线名称，例如 `mode`、`route_width`、`route_depth`、`road_snap_distance`、`route_boundary_percent`、`topo_source`、`topo_dir`、`city_dir`、`building_default_height`、`building_height_scale` 和 `nozzle_diameter`。也可用向后兼容的 `gpx_file` 键设置默认 `.gpx`/`.fit` 文件或目录；`--3mf` / `--no-3mf` 对应 `use_3mf`。相对字体、地形和城市缓存路径都以设置文件所在目录为基准解析。未知键、无效 JSON 或错误的数据类型都会产生明确错误。`.gpx2stl.settings.json` 已被 Git 忽略，而完整模板 `settings.example.json` 会纳入版本控制。
 
 四方向路线边界在 JSON 中按北、东、南、西顺序使用数组，例如 `"route_boundary_percent": [10, 15, 10, 15]`。单个数值仍表示对称边界。`"auto"` 在城市模式中解析为对称 5% 边界，在其他模式中解析为地形搜索；`"search"` 可在任何模式中显式强制地形搜索。
 
@@ -515,6 +520,9 @@ python -m gpx2stl route.gpx --mode city
 # 北/南各 10%、东/西各 20% 路线边界的城市模型
 python -m gpx2stl route.gpx --mode city --route-boundary-percent 10,20,10,20
 
+# 针对 0.2 mm 喷嘴补偿建筑和桥面
+python -m gpx2stl route.gpx --mode city --nozzle-diameter 0.2
+
 # 保留原始活动路线，不进行道路匹配
 python -m gpx2stl route.gpx --mode city --road-snap-distance 0
 
@@ -568,6 +576,7 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 | `--route-width` | 城市：`0.5` mm；其他：`1` mm | 打印路线带宽度。 |
 | `--route-height` | 城市：`1.5` mm；其他：`2` mm | 地形模式中路线高出地形的高度；城市路线保持齐平并使用 `--route-depth`。 |
 | `--route-depth` | 城市：`1.5` mm；其他：`0.6` mm | 城市模式中齐平路线嵌件及凹槽的深度，必须小于底座厚度。 |
+| `--nozzle-diameter` | 无 | 城市建筑和桥面的可选喷嘴直径（模型毫米）。例如 `0.2` 会把每个外形向外扩展一半直径，使小于喷嘴的特征变宽，并合并小于喷嘴直径的间隙；省略时保留最详细的源几何。 |
 | `--water-depth` | `0.4` mm | 城市模式中齐平水体嵌件及凹槽的深度，必须小于生成或自定义底座厚度。 |
 | `--topo`, `--no-topo` | 启用 | 启用或禁用地形。 |
 | `--route-boundary-percent` | 城市生成底座：`10,10,10,10`；城市自定义底座：`10`；地形：`auto`；无地形：`10` | 一个有限非负对称百分比、按 `北,东,南,西` 排列的四个逗号分隔百分比、上下文相关的 `auto` 或 `search`。城市模式中 `auto` 表示对称 5%，其他模式中表示地形搜索；`search` 始终强制搜索且要求启用地形。设置文件使用四数字 JSON 数组；四方向值仅支持生成底座。 |
@@ -610,6 +619,7 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 - 显式设置 `--terrain-height` 会覆盖真实比例，将 DEM 最低点到最高点的高度差归一化到指定毫米数。
 - 禁用地形时，路线顶部采用 GPX 或 FIT 高程和真实的 1:20,000 垂直比例：1,000 m 对应 50 mm。内部缺失高程会插值；端点或全部高程缺失会报错。
 - 城市模式会把带 OSM `bridge` 标记的道路、铁路和桥梁外形生成为可打印桥面。建筑和桥梁高度在水平地图比例之后默认放大 5 倍，以免较矮结构在城市尺度模型中消失；将 `building_height_scale` 设为 `1` 可恢复真实比例。
+- `--nozzle-diameter` 是可选的几何补偿，而不是切片器设置。程序将每个建筑和桥面外形向外偏移指定模型直径的一半，使窄于喷嘴的特征变宽、关闭小于该直径的间隙和中庭，并让相邻结构连接为没有重叠体积的可打印同材质组；较高结构占用共享外形区域，因此组合后仍保留阶梯式屋顶/桥面。进度日志会按当前模型比例报告对应的源米制偏移。补偿结果会裁剪到可打印地形边界，不会重塑路线、水体、地形或文字，但扩大的结构可能覆盖更多路线或水体嵌件。省略该选项（或在 JSON 中设为 `null`）即可保留最详细的 OSM 几何。
 - 城市数据始终使用固定的 0.01° 缓存网格。缺失瓦片会依次下载，每次请求之间至少等待两秒；读取已有缓存瓦片时不会等待或访问服务。
 - 城市水体包括 OSM 湖泊、池塘、水库、流域、河岸，按标注或推断宽度生成的河流/溪流/运河，以及有向海岸线的临海一侧。水体会裁剪到可打印地形，并作为独立且表面齐平的 `Water` 嵌件输出；路线穿过水面时路线材料优先。
 - 数值边界模式下，方形为加边界前包围路线的最小正北方形；圆形为真实最小包围圆；六边形为可平移的最小平顶正六边形。搜索模式同时适配八方向地理选择多边形与路线。

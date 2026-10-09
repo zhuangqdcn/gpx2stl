@@ -62,6 +62,7 @@ SETTING_KEYS = {
     "city_dir_linux",
     "building_default_height",
     "building_height_scale",
+    "nozzle_diameter",
     "water_depth",
     "dem_type",
     "api_key",
@@ -518,6 +519,13 @@ def create_parser(settings: dict[str, Any] | None = None) -> argparse.ArgumentPa
         help="building height multiplier after map scaling (city mode; default: 5)",
     )
     parser.add_argument(
+        "--nozzle-diameter",
+        type=_positive,
+        default=None,
+        help="optional nozzle diameter in mm for printable city structures "
+        "(default: preserve maximum detail)",
+    )
+    parser.add_argument(
         "--water-depth",
         type=_positive,
         default=0.4,
@@ -628,6 +636,8 @@ def config_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser) 
             parser.error("--route-depth must be smaller than --base-height in city mode")
         if base_stl is None and args.water_depth >= args.base_height:
             parser.error("--water-depth must be smaller than --base-height in city mode")
+    elif args.nozzle_diameter is not None:
+        parser.error("--nozzle-diameter requires --mode city")
     if args.topo:
         if args.topo_source == "online":
             if topo_file is not None or args.topo_dir is not None:
@@ -725,6 +735,7 @@ def config_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser) 
         city_dir=city_dir,
         building_default_height=args.building_default_height,
         building_height_scale=args.building_height_scale,
+        nozzle_diameter=args.nozzle_diameter,
         water_depth=args.water_depth,
         dem_type=args.dem_type,
         api_key=api_key,
@@ -916,6 +927,18 @@ def _validate_setting_types(
         parser.error("--road-snap-distance must be greater than or equal to zero")
     if args.building_default_height <= 0 or args.building_height_scale <= 0:
         parser.error("building dimensions must be greater than zero")
+    if args.nozzle_diameter is not None:
+        if isinstance(args.nozzle_diameter, bool) or not isinstance(
+            args.nozzle_diameter, (int, float)
+        ):
+            parser.error(
+                "settings file value 'nozzle_diameter' must be a number or null"
+            )
+        if (
+            not math.isfinite(args.nozzle_diameter)
+            or args.nozzle_diameter <= 0
+        ):
+            parser.error("--nozzle-diameter must be a finite number greater than zero")
     if args.water_depth <= 0:
         parser.error("--water-depth must be greater than zero")
     if args.text_height <= 0:

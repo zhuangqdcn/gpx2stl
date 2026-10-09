@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import shapely
 from numpy.typing import NDArray
@@ -229,6 +231,18 @@ def convert(
     boundary = config.resolved_route_boundary_percent
     if config.mode == "city" and not config.topo:
         raise Gpx2StlError("City mode requires topography.")
+    if config.nozzle_diameter is not None:
+        if config.mode != "city":
+            raise Gpx2StlError("Nozzle compensation requires city mode.")
+        if (
+            isinstance(config.nozzle_diameter, bool)
+            or not isinstance(config.nozzle_diameter, (int, float))
+            or not math.isfinite(config.nozzle_diameter)
+            or config.nozzle_diameter <= 0
+        ):
+            raise Gpx2StlError(
+                "Nozzle diameter must be a finite number greater than zero."
+            )
     if boundary == "search":
         if not config.topo:
             raise Gpx2StlError(
@@ -437,6 +451,15 @@ def convert(
             progress("Topography disabled; using the flat custom top")
     progress("Generating watertight base, topography, and route meshes")
     if config.mode == "city":
+        if config.nozzle_diameter is not None:
+            source_offset_m = (
+                config.nozzle_diameter / 2.0 / transform.scale
+            )
+            progress(
+                f"Applying {config.nozzle_diameter:g} mm nozzle compensation "
+                "to buildings and bridge decks "
+                f"({source_offset_m:g} source meters outward per side)"
+            )
         geometry = build_geometry(
             route,
             footprint,

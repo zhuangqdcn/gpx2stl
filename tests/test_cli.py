@@ -60,6 +60,7 @@ def test_cli_defaults(simple_gpx: Path, monkeypatch: pytest.MonkeyPatch) -> None
     assert config.city_dir == (Path.cwd() / "asset" / "city").resolve()
     assert config.building_default_height == 10.0
     assert config.building_height_scale == 5.0
+    assert config.nozzle_diameter is None
     assert config.water_depth == 0.4
     assert config.api_key == "test-key"
 
@@ -92,6 +93,8 @@ def test_city_mode_configuration(simple_gpx: Path) -> None:
                 "12",
                 "--building-height-scale",
                 "1.5",
+                "--nozzle-diameter",
+                "0.2",
                 "--city-dir",
                 "osm-cache",
             ]
@@ -108,6 +111,7 @@ def test_city_mode_configuration(simple_gpx: Path) -> None:
     assert config.route_depth == 0.8
     assert config.building_default_height == 12.0
     assert config.building_height_scale == 1.5
+    assert config.nozzle_diameter == 0.2
     assert config.city_dir == (Path.cwd() / "osm-cache").resolve()
 
 
@@ -121,6 +125,52 @@ def test_city_mode_route_defaults_are_narrow_and_deep(simple_gpx: Path) -> None:
     assert config.route_width == 0.5
     assert config.route_height == 1.5
     assert config.route_depth == 1.5
+
+
+def test_nozzle_diameter_requires_city_mode(
+    simple_gpx: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    parser = create_parser()
+
+    with pytest.raises(SystemExit):
+        config_from_args(
+            parser.parse_args(
+                [str(simple_gpx), "--nozzle-diameter", "0.2"]
+            ),
+            parser,
+        )
+
+    assert "requires --mode city" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "value", [True, "wide", 0, -0.2, float("nan"), float("inf")]
+)
+def test_settings_reject_invalid_nozzle_diameter(
+    simple_gpx: Path,
+    value: object,
+) -> None:
+    parser = create_parser(
+        {"mode": "city", "nozzle_diameter": value}
+    )
+
+    with pytest.raises(SystemExit):
+        config_from_args(parser.parse_args([str(simple_gpx)]), parser)
+
+
+def test_cli_nozzle_diameter_overrides_settings(simple_gpx: Path) -> None:
+    parser = create_parser(
+        {"mode": "city", "nozzle_diameter": 0.4}
+    )
+
+    config = config_from_args(
+        parser.parse_args(
+            [str(simple_gpx), "--nozzle-diameter", "0.2"]
+        ),
+        parser,
+    )
+
+    assert config.nozzle_diameter == 0.2
 
 
 def test_city_mode_accepts_directional_route_boundary(simple_gpx: Path) -> None:

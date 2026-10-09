@@ -115,6 +115,7 @@ def test_city_conversion_loads_osm_matches_roads_and_exports_buildings(
             topo_dir=tmp_path / "asset",
             city_dir=tmp_path / "city",
             max_size=20.0,
+            nozzle_diameter=0.2,
         ),
         progress=messages.append,
     )
@@ -122,6 +123,13 @@ def test_city_conversion_loads_osm_matches_roads_and_exports_buildings(
     assert output.is_file()
     assert any(message.startswith("Loaded 1 buildings and 1 roads") for message in messages)
     assert any(message.startswith("Road-matched ") for message in messages)
+    assert any(
+        message.startswith(
+            "Applying 0.2 mm nozzle compensation to buildings and bridge decks "
+        )
+        and "source meters outward per side" in message
+        for message in messages
+    )
     assert any(message.startswith("Generated buildings mesh") for message in messages)
     assert "Writing 4-object, 5-material 3MF package" in messages
 

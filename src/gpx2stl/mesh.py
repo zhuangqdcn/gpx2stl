@@ -24,6 +24,7 @@ from gpx2stl.custom_base import CustomBase
 from gpx2stl.city import CityBuilding
 from gpx2stl.dem import DemSource, fill_missing
 from gpx2stl.errors import Gpx2StlError
+from gpx2stl.footprint import footprint_vertices
 from gpx2stl.models import Config, Footprint, ModelTransform, ProjectedRoute
 
 HeightFunction = Callable[[NDArray[np.float64]], NDArray[np.float64]]
@@ -1123,14 +1124,32 @@ def _building_mesh(
     transform: ModelTransform,
     surface_height: HeightFunction,
     config: Config,
+    printable_clip: Polygon | None = None,
 ) -> trimesh.Trimesh | None:
     components: list[trimesh.Trimesh] = []
+    candidates: list[tuple[Polygon, float]] = []
+
+    def append_component(polygon: Polygon, top_z: float) -> None:
+        def bottom_height(points: NDArray[np.float64]) -> NDArray[np.float64]:
+            return surface_height(points) - 0.05
+
+        def top_height(points: NDArray[np.float64]) -> NDArray[np.float64]:
+            return np.full(len(points), top_z, dtype=np.float64)
+
+        components.append(
+            _variable_extrusion(polygon, bottom_height, top_height)
+        )
+
     for building in buildings:
         projected_polygon = building.polygon
         height_m = building.height_m
-        model_geometry = shapely.orient_polygons(
+        model_geometry = _compensate_structure_footprint(
             shapely.transform(projected_polygon, transform.to_model),
-            exterior_cw=True,
+            config.nozzle_diameter,
+            printable_clip,
+        )
+        model_geometry = shapely.orient_polygons(
+            model_geometry, exterior_cw=True
         )
         model_height = height_m * transform.scale * config.building_height_scale
         for polygon in _polygon_parts(model_geometry):
@@ -1146,21 +1165,93 @@ def _building_mesh(
             )
             terrain_heights = surface_height(boundary_points)
             top_z = float(np.max(terrain_heights)) + model_height
-
-            def bottom_height(points: NDArray[np.float64]) -> NDArray[np.float64]:
-                return surface_height(points) - 0.05
-
-            def top_height(points: NDArray[np.float64]) -> NDArray[np.float64]:
-                return np.full(len(points), top_z, dtype=np.float64)
-
-            components.append(
-                _variable_extrusion(polygon, bottom_height, top_height)
-            )
+            if config.nozzle_diameter is None:
+                append_component(polygon, top_z)
+            else:
+                candidates.append((polygon, top_z))
+    if candidates:
+        for polygon, top_z in _resolve_structure_overlaps(candidates):
+            append_component(polygon, top_z)
     if not components:
         return None
     result = trimesh.util.concatenate(components)
     result.remove_unreferenced_vertices()
     return result
+
+
+def _compensate_structure_footprint(
+    geometry: Polygon | MultiPolygon,
+    nozzle_diameter: float | None,
+    printable_clip: Polygon | None,
+) -> Polygon | MultiPolygon:
+    if nozzle_diameter is None:
+        return geometry
+    if printable_clip is None:
+        raise Gpx2StlError(
+            "No printable terrain boundary is available for nozzle compensation."
+        )
+    expanded = geometry.buffer(
+        nozzle_diameter / 2.0,
+        join_style="mitre",
+        mitre_limit=2.0,
+    )
+    return (
+        expanded
+        if printable_clip.covers(expanded)
+        else expanded.intersection(printable_clip)
+    )
+
+
+def _resolve_structure_overlaps(
+    candidates: list[tuple[Polygon, float]],
+) -> tuple[tuple[Polygon, float], ...]:
+    polygons = [polygon for polygon, _ in candidates]
+    order = sorted(
+        range(len(candidates)),
+        key=lambda index: (-candidates[index][1], index),
+    )
+    rank = np.empty(len(order), dtype=np.int64)
+    rank[order] = np.arange(len(order), dtype=np.int64)
+    tree = shapely.STRtree(polygons)
+    resolved: list[tuple[Polygon, float]] = []
+    for index in order:
+        polygon, top_z = candidates[index]
+        blocker_indices = [
+            int(other)
+            for other in tree.query(polygon, predicate="intersects")
+            if rank[int(other)] < rank[index]
+        ]
+        visible = (
+            polygon.difference(
+                shapely.union_all([polygons[other] for other in blocker_indices])
+            )
+            if blocker_indices
+            else polygon
+        )
+        for part in _polygon_parts(visible):
+            normalized = shapely.set_precision(part, grid_size=1e-6)
+            for printable in _polygon_parts(normalized):
+                if not printable.is_empty and printable.area > 1e-9:
+                    resolved.append((printable, top_z))
+    return tuple(resolved)
+
+
+def _structure_printable_clip(
+    footprint: Footprint,
+    transform: ModelTransform,
+    custom_base: CustomBase | None,
+) -> Polygon:
+    if custom_base is not None:
+        return custom_base.terrain_polygon
+    if footprint.shape == "circle":
+        center = transform.to_model(
+            np.asarray([footprint.center], dtype=np.float64)
+        )[0]
+        return Point(center).buffer(
+            footprint.radius * transform.scale,
+            quad_segs=64,
+        )
+    return Polygon(transform.to_model(footprint_vertices(footprint)))
 
 
 def _water_mesh(
@@ -1363,7 +1454,17 @@ def build_geometry(
                 water_mesh, cavity, "the water inlay"
             )
     building_mesh = (
-        _building_mesh(buildings, transform, surface, config)
+        _building_mesh(
+            buildings,
+            transform,
+            surface,
+            config,
+            (
+                _structure_printable_clip(footprint, transform, custom_base)
+                if config.nozzle_diameter is not None
+                else None
+            ),
+        )
         if config.mode == "city"
         else None
     )

@@ -44,6 +44,7 @@
   "city_dir_linux": null,
   "building_default_height": 10.0,
   "building_height_scale": 5.0,
+  "nozzle_diameter": null,
   "water_depth": 0.4,
   "dem_type": null,
   "api_key": null,
