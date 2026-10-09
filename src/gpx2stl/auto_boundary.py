@@ -1,9 +1,10 @@
 """Bounded, reproducible DEM-based *estimates* of mountain slope envelopes.
 
-This is not named-mountain identification. Low, nearly level valley floors act
-as background markers in an inverted-elevation watershed; summit plateaus act
-as foreground markers. A massif without an observable valley floor is
-deliberately unresolved, rather than silently cropped at the search limit.
+This is not named-mountain identification. Cells meeting configurable valley
+thresholds act as background markers in an inverted-elevation watershed;
+summit plateaus act as foreground markers. A massif without an observable
+valley floor is deliberately unresolved, rather than silently cropped at the
+search limit.
 """
 
 from __future__ import annotations
@@ -38,21 +39,22 @@ MIN_RELIEF_M = 60.0
 # Merge noise summits / shallow saddles, not distinct peaks across deep valleys.
 MIN_PROMINENCE_M = 35.0
 SHALLOW_SADDLE_FRACTION = 0.12
-# Require level valley floors, rather than misclassifying gentle foothills.
-VALLEY_RELIEF_M = 1.0
-VALLEY_SLOPE = 0.002
+# Permissive defaults; stricter thresholds can require low, level valley floors.
+VALLEY_RELIEF_M = 1000.0
+VALLEY_SLOPE = 1.0
 SAFETY_BUFFER_M = GRID_SPACING_M
 EDGE_GUARD_CELLS = 4
 STABILITY_FRACTION = 0.005
 MAX_DEM_PIXEL_M = 3.0 * GRID_SPACING_M
+SUPPORT_ROUNDING_MARGIN_M = 1e-8
 
 
 @dataclass(frozen=True)
 class ValleyCriteria:
     max_relief_m: float = VALLEY_RELIEF_M
     max_slope_percent: float = 100 * VALLEY_SLOPE
-    max_height_m: float = 20.0
-    max_height_percent: float = 3.0
+    max_height_m: float = 1000.0
+    max_height_percent: float = 100.0
 
     def __post_init__(self) -> None:
         for name in (
@@ -310,7 +312,7 @@ def _valley_background(
         - ndimage.minimum_filter(height, size=local_size)
     )
     dy, dx = np.gradient(height, GRID_SPACING_M)
-    # Low, flat cells are valley-floor markers, not arbitrarily clipped search edges.
+    # Criteria select valley markers, not arbitrarily clipped search edges.
     return (
         (height <= floor + min(
             criteria.max_height_m, criteria.max_height_percent / 100 * relief
@@ -465,7 +467,11 @@ def _finish(
         if resolved[index]:
             assert evidence is not None
             cell_extent = GRID_SPACING_M / 2 * sum(abs(value) for value in direction.vector)
-            limit = max(float(maxima[index]), evidence[index].support + cell_extent + SAFETY_BUFFER_M)
+            # Exact route-support vertices can round inward during half-plane intersection.
+            limit = max(
+                float(maxima[index]) + SUPPORT_ROUNDING_MARGIN_M,
+                evidence[index].support + cell_extent + SAFETY_BUFFER_M,
+            )
             padding = limit - float(maxima[index])
             percentage = f"{100 * padding / basis:.1f}%" if basis else "percentage undefined: zero route span"
             progress(f"{direction.name}: valley boundary found; padding {padding:.1f} m ({percentage})")

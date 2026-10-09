@@ -53,6 +53,36 @@ def test_redundant_constraints_and_diagonal_corner_cuts():
     assert_constraints(octagon, limits)
 
 
+@pytest.mark.parametrize("offset", [(0, 0), (500000, 4000000)])
+def test_detected_zero_padding_retains_route_vertices_on_half_plane_boundaries(offset):
+    route = activity(np.array((
+        (1641.7588983404275, -796.7592679761233),
+        (-984.9450668044964, -1416.559823429488),
+        (-1236.434639106705, -1173.6968607737626),
+        (-703.9362255075705, -949.3200512224948),
+        (-656.1756024478686, 476.7711171230053),
+    )) + offset)
+    maxima, _ = route_projections(route.points)
+    limits = maxima + np.array([0, 500, 1000, 1500, 1500, 0, 0, 0])
+    evidence = tuple(
+        boundary._DirectionalEvidence(
+            float(limit) - 45 * sum(abs(value) for value in direction.vector) - 90,
+            np.empty(0), True,
+        )
+        for direction, limit in zip(DIRECTIONS, limits)
+    )
+    result = boundary._finish(
+        route, FlatDem(()), 1, 8000, evidence, [True] * 8,
+        ["stable boundary"] * 8, lambda _: None,
+    )
+    assert result.envelope.covers(LineString(route.points))
+    assert all(item.resolved for item in result.directions)
+    np.testing.assert_allclose(
+        [item.support_limit for item in result.directions], limits, rtol=0, atol=1e-7
+    )
+    assert_constraints(result.envelope, limits)
+
+
 @pytest.mark.parametrize("index", range(8), ids=[item.name for item in DIRECTIONS])
 def test_single_direction_fallback_preserves_all_other_constraints(index):
     route = activity()

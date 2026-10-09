@@ -258,40 +258,40 @@ def create_parser(settings: dict[str, Any] | None = None) -> argparse.ArgumentPa
     parser.add_argument(
         "--auto-boundary-max-distance-km",
         type=_positive,
-        default=20.0,
-        help="maximum auto discovery expansion beyond each route side in km (default: 20)",
+        default=10.0,
+        help="maximum auto discovery expansion beyond each route side in km (default: 10)",
     )
     parser.add_argument(
         "--auto-valley-max-relief-m",
         action=_ValleyThresholdAction,
         type=_nonnegative,
-        default=1.0,
+        default=1000.0,
         help="maximum smoothed local variation over about 900 m for auto valleys in m "
-        "(default: 1; increasing loosens detection)",
+        "(default: 1000; increasing loosens detection)",
     )
     parser.add_argument(
         "--auto-valley-max-slope-percent",
         action=_ValleyThresholdAction,
         type=_nonnegative,
-        default=0.2,
-        help="maximum auto valley slope in percent (default: 0.2; increasing loosens detection)",
+        default=100.0,
+        help="maximum auto valley slope in percent (default: 100; increasing loosens detection)",
     )
     parser.add_argument(
         "--auto-valley-max-height-m",
         action=_ValleyThresholdAction,
         type=_nonnegative,
-        default=20.0,
+        default=1000.0,
         help="maximum auto valley height above the window floor in m, capped by "
         "--auto-valley-max-height-percent of window relief "
-        "(default: 20; increasing loosens detection)",
+        "(default: 1000; increasing loosens detection)",
     )
     parser.add_argument(
         "--auto-valley-max-height-percent",
         action=_ValleyThresholdAction,
         type=_valley_height_percentage,
-        default=3.0,
+        default=100.0,
         help="maximum auto valley height above the window floor as percent of window relief, "
-        "capped by --auto-valley-max-height-m (0 to 100; default: 3; increasing loosens detection)",
+        "capped by --auto-valley-max-height-m (0 to 100; default: 100; increasing loosens detection)",
     )
     parser.add_argument(
         "--shape",
@@ -342,8 +342,8 @@ def create_parser(settings: dict[str, Any] | None = None) -> argparse.ArgumentPa
     parser.add_argument(
         "--text-boundary-percent",
         type=_text_boundary_percentage,
-        default=15.0,
-        help="per-side text band inset in percent; ignored without text (default: 15)",
+        default=7.0,
+        help="per-side text band inset in percent; ignored without text (default: 7)",
     )
     parser.add_argument(
         "--font-family",

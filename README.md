@@ -182,11 +182,11 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 | `--route-height` | `2` mm | Route height above terrain in topo mode. |
 | `--topo`, `--no-topo` | topo | Enable or disable terrain. |
 | `--route-boundary-percent` | `auto` with topo; `10` without | A finite nonnegative padding percentage, or the exact string `auto` for DEM-based mountain discovery. Independent of the text band; explicit `auto` requires topo. |
-| `--auto-boundary-max-distance-km` | `20` km | Finite positive maximum discovery distance beyond each side of the route bounding box in automatic mode. |
-| `--auto-valley-max-relief-m` | `1` m | Maximum smoothed elevation variation across the approximately 900 m valley neighborhood. Increase to admit uneven valley floors. |
-| `--auto-valley-max-slope-percent` | `0.2` % | Maximum smoothed valley-floor slope as a percentage grade (`2` means 2%, not 200%). |
-| `--auto-valley-max-height-m` | `20` m | Maximum height above the search window's 10th-percentile elevation floor; also limited by the relief percentage below. |
-| `--auto-valley-max-height-percent` | `3` % | Maximum height above that floor as a percentage of observed window relief, from 0 to 100. |
+| `--auto-boundary-max-distance-km` | `10` km | Finite positive maximum discovery distance beyond each side of the route bounding box in automatic mode. |
+| `--auto-valley-max-relief-m` | `1000` m | Maximum smoothed elevation variation across the approximately 900 m valley neighborhood. Increase to admit uneven valley floors. |
+| `--auto-valley-max-slope-percent` | `100` % | Maximum smoothed valley-floor slope as a percentage grade (`2` means 2%, not 200%). |
+| `--auto-valley-max-height-m` | `1000` m | Maximum height above the search window's 10th-percentile elevation floor; also limited by the relief percentage below. |
+| `--auto-valley-max-height-percent` | `100` % | Maximum height above that floor as a percentage of observed window relief, from 0 to 100. |
 | `--shape` | `square` | `square`, `circle`, or flat-top `hex`. Squares remain north-up. |
 | `--text` | none | Text placed as one compact run along the flat frame, with its reserved seam centered at the bottom. |
 | `--text-height` | `1` mm | Raised text thickness above the frame. |
@@ -195,7 +195,7 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 | `--text-align` | `center` | Align the compact text run `left`, `center`, or `right` within the usable perimeter measured from the bottom seam. |
 | `--text-mode` | `raised` | Use `raised` text or an `embedded` flush inlay. Embedded text requires 3MF output. |
 | `--text-depth` | `0.6` mm | Depth of the cavity and flush text inlay in embedded mode. |
-| `--text-boundary-percent` | `15` | Per-side text-band inset as a percentage of outer width (custom bases: smaller top dimension); from 0 inclusive to 50 exclusive. Ignored without text. |
+| `--text-boundary-percent` | `7` | Per-side text-band inset as a percentage of outer width (custom bases: smaller top dimension); from 0 inclusive to 50 exclusive. Ignored without text. |
 | `--font-family` | `DejaVu Sans` | Installed font family used for text. |
 | `--font-file` | none | Exact custom `.ttf`, `.otf`, or `.ttc` face for scripts not covered by an installed font; cannot be combined with family/weight/style options. |
 | `--font-size` | automatic | Requested glyph height in millimeters; omitted text is automatically fitted. |
@@ -221,7 +221,7 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 - Setting `--terrain-height` explicitly overrides true-scale relief and normalizes the DEM minimum-to-maximum range to that many millimeters.
 - Without topo, GPX or FIT altitude controls the route top at physical 1:20,000 vertical scale: 1,000 m becomes 50 mm. Internal missing elevations are interpolated; missing endpoint/all elevations are errors.
 - In numeric boundary mode, square output is the smallest north-up square around the route before padding. Circle output uses the true minimum enclosing circle. Hex output uses the minimum translated flat-top regular hexagon. Automatic mode fits the eight-direction geographic selection polygon together with the route.
-- When `--text` is present, `--max-size` controls the outer square, circle, or hex frame. The centered terrain circle has diameter `max_size × (1 - 2 × text_boundary_percent / 100)`; the rest of the frame stays flat at the base-top height. The default 15% text boundary retains a 70% terrain diameter. Hex frames need more than approximately 6.7% to leave a text band at their narrower sides; glyphs and margins may require more.
+- When `--text` is present, `--max-size` controls the outer square, circle, or hex frame. The centered terrain circle has diameter `max_size × (1 - 2 × text_boundary_percent / 100)`; the rest of the frame stays flat at the base-top height. The default 7% text boundary retains an 86% terrain diameter. Hex frames need more than approximately 6.7% to leave a text band at their narrower sides; glyphs and margins may require more.
 - A numeric `--route-boundary-percent` pads the minimum route footprint before fitting it into the terrain: square side length is multiplied by `1 + 2 × route_boundary_percent / 100`, while circle/hex radius is multiplied by `1 + route_boundary_percent / 100`. Route-width clearance is added separately. Changing route boundary does not resize the text band. Without text, text boundary is ignored and the full generated footprint is available.
 - In 3MF output, the generated prism or supplied custom STL remains a separate `Base` object. Enabled relief is a separately watertight `Topography` object with a small intentional overlap into the base for reliable slicing. Disabling topo omits that object.
 - Text defaults to DejaVu Sans and is placed as a compact tangent run on the perimeter. `--text-align` positions that run in the usable perimeter after the bottom seam; it does not stretch inter-character spacing. Text is automatically fitted unless `--font-size` requests a glyph height. Select an installed family and variant with `--font-family`, `--font-weight`, and `--font-style`, or use `--font-file` to select one exact face. The bottom seam reserves eight font spaces by default; `--text-end-gap` adds an absolute gap and quoted leading/trailing spaces add font-relative gap. Missing fonts, variants, or glyphs are reported explicitly.
@@ -251,15 +251,15 @@ The selection polygon recenters the geographic fit and shrinks the route as need
 
 After each search window, logs report the search distance and all eight directional statuses: valley boundary found and stable, candidate awaiting stability, or unresolved with a reason. Final results distinguish complete detection, partial fallback, and all-direction fallback, and list each direction as valley boundary found or fallback, with its padding distance and percentage basis plus the fallback reason where applicable. Separate final printable-footprint clearances report actual projected padding in all eight directions; these may exceed 100% and are not the requested selection limits. Percentages for zero route spans are explicitly undefined rather than misleading.
 
-The outward search cap defaults to 20 km beyond each side of the route bounding box; change it with `--auto-boundary-max-distance-km` or JSON `auto_boundary_max_distance_km`. Larger windows can increase processing time, memory, DEM downloads, and API costs. Additional DEM coverage may be fetched under the existing `--topo-source` policy; `local` never downloads, and an explicit `--topo-file` must cover the required area. The final printable footprint can need coverage beyond the discovery area.
+The outward search cap defaults to 10 km beyond each side of the route bounding box; change it with `--auto-boundary-max-distance-km` or JSON `auto_boundary_max_distance_km`. Larger windows can increase processing time, memory, DEM downloads, and API costs. Additional DEM coverage may be fetched under the existing `--topo-source` policy; `local` never downloads, and an explicit `--topo-file` must cover the required area. The final printable footprint can need coverage beyond the discovery area.
 
 Missing/nonfinite DEM data, insufficient useful resolution, resource limits, invalid inputs, and unexpected failures remain explicit errors, not fallback conditions. The directional fallback does not relax DEM coverage requirements. Use better local DEM data or adjust the search cap where appropriate; explicitly choosing numeric padding such as `--route-boundary-percent 10` remains available.
 
-Detection uses an anchored 90 m analysis grid, at most 1,000,000 cells, and requires contributing DEM pixels no larger than 270 m. It needs at least 60 m of observed relief and identifiable low valley floors. The unchanged conservative defaults require at most 1 m of smoothed elevation variation across an approximately 900 m neighborhood, at most 0.2% slope, and a height above the window's 10th-percentile elevation floor of at most `min(20 m, 3% of observed relief)`. These checks can be too strict for narrow, uneven, sloping, or elevated valleys: a visible local valley near the route's start/end need not be a low, nearly level floor across this whole neighborhood.
+Detection uses an anchored 90 m analysis grid, at most 1,000,000 cells, and requires contributing DEM pixels no larger than 270 m. It needs at least 60 m of observed relief and usable summit/valley evidence. The very permissive default valley criteria allow up to 1000 m of smoothed elevation variation across an approximately 900 m neighborhood, up to 100% grade (45°), and a height above the window's 10th-percentile elevation floor of at most `min(1000 m, 100% of observed relief)`. These defaults can classify mountain slopes as valleys or erase foreground summits from segmentation, leaving no usable mountain region and leading to fallback rather than successful detection. Evidence and independent directional stability requirements, fallback rules, and explicit error behavior remain unchanged.
 
-All four valley thresholds are configurable in the CLI and JSON settings (replace hyphens with underscores for JSON keys). Values must be finite nonnegative numbers; the height percentage cannot exceed 100. Increase values to loosen conditions. All conditions must pass together: increasing only slope will not help if neighborhood variation or height above the floor still fails. The effective height limit is always the **smaller** of the meter limit and the relief-percentage limit. Controls apply only to automatic boundary mode; numeric padding is unchanged.
+All four valley thresholds are configurable in the CLI and JSON settings (replace hyphens with underscores for JSON keys). Values must be finite nonnegative numbers; the height percentage cannot exceed 100. Increasing values loosens conditions; lowering values tightens them. All conditions must pass together: increasing only slope will not help if neighborhood variation or height above the floor still fails. The effective height limit is always the **smaller** of the meter limit and the relief-percentage limit. Controls apply only to automatic boundary mode; numeric padding is unchanged.
 
-For example, to experiment with less conservative conditions:
+For example, to experiment with more conservative conditions than the defaults, lower all four thresholds:
 
 ```bash
 python -m gpx2stl route.gpx --route-boundary-percent auto --auto-valley-max-relief-m 35 --auto-valley-max-slope-percent 3 --auto-valley-max-height-m 150 --auto-valley-max-height-percent 15
@@ -523,11 +523,11 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 | `--route-height` | `2` mm | 启用地形时路线高出地形的高度。 |
 | `--topo`, `--no-topo` | 启用 | 启用或禁用地形。 |
 | `--route-boundary-percent` | 有地形时 `auto`；无地形时 `10` | 有限非负边界百分比，或精确字符串 `auto`（基于 DEM 搜索山体）；与文字带独立，显式 `auto` 必须启用地形。 |
-| `--auto-boundary-max-distance-km` | `20` km | 自动模式下，从路线包围盒每侧向外搜索的最大距离，必须为有限正数。 |
-| `--auto-valley-max-relief-m` | `1` m | 约 900 m 谷底邻域内平滑高程的最大变化；增大可接受不平整谷底。 |
-| `--auto-valley-max-slope-percent` | `0.2` % | 平滑谷底的最大坡度百分比（`2` 表示 2%，不是 200%）。 |
-| `--auto-valley-max-height-m` | `20` m | 高于搜索窗口第 10 百分位高程基准的最大高度，同时受下方高差百分比限制。 |
-| `--auto-valley-max-height-percent` | `3` % | 高于该基准的最大高度占窗口可观测高差的百分比，范围为 0 到 100。 |
+| `--auto-boundary-max-distance-km` | `10` km | 自动模式下，从路线包围盒每侧向外搜索的最大距离，必须为有限正数。 |
+| `--auto-valley-max-relief-m` | `1000` m | 约 900 m 谷底邻域内平滑高程的最大变化；增大可接受不平整谷底。 |
+| `--auto-valley-max-slope-percent` | `100` % | 平滑谷底的最大坡度百分比（`2` 表示 2%，不是 200%）。 |
+| `--auto-valley-max-height-m` | `1000` m | 高于搜索窗口第 10 百分位高程基准的最大高度，同时受下方高差百分比限制。 |
+| `--auto-valley-max-height-percent` | `100` % | 高于该基准的最大高度占窗口可观测高差的百分比，范围为 0 到 100。 |
 | `--shape` | `square` | `square`（方形）、`circle`（圆形）或平顶 `hex`（正六边形）；方形保持正北朝上。 |
 | `--text` | 无 | 沿平坦外框放置的紧凑文字段；预留接缝位于底部中央。 |
 | `--text-height` | `1` mm | 文字高出外框的厚度。 |
@@ -536,7 +536,7 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 | `--text-align` | `center` | 相对底部接缝在可用周长内将紧凑文字段设为 `left`、`center` 或 `right`。 |
 | `--text-mode` | `raised` | 使用 `raised` 凸起文字或 `embedded` 齐平嵌件；嵌入模式仅支持 3MF。 |
 | `--text-depth` | `0.6` mm | 嵌入模式中文字凹槽和齐平嵌件的深度。 |
-| `--text-boundary-percent` | `15` | 每侧文字边框内缩占外宽的百分比（自定义底座使用顶面较小尺寸）；大于等于 0 且小于 50，无文字时忽略。 |
+| `--text-boundary-percent` | `7` | 每侧文字边框内缩占外宽的百分比（自定义底座使用顶面较小尺寸）；大于等于 0 且小于 50，无文字时忽略。 |
 | `--font-family` | `DejaVu Sans` | 用于文字的已安装字体族。 |
 | `--font-file` | 无 | 精确指定自定义 `.ttf`、`.otf` 或 `.ttc` 字体文件；不可与字体族、粗细或样式选项组合。 |
 | `--font-size` | 自动 | 字形高度（毫米）；省略时自动适配。 |
@@ -562,7 +562,7 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 - 显式设置 `--terrain-height` 会覆盖真实比例，将 DEM 最低点到最高点的高度差归一化到指定毫米数。
 - 禁用地形时，路线顶部采用 GPX 或 FIT 高程和真实的 1:20,000 垂直比例：1,000 m 对应 50 mm。内部缺失高程会插值；端点或全部高程缺失会报错。
 - 数值边界模式下，方形为加边界前包围路线的最小正北方形；圆形为真实最小包围圆；六边形为可平移的最小平顶正六边形。自动模式同时适配八方向地理选择多边形与路线。
-- 指定 `--text` 后，`--max-size` 控制方形、圆形或六边形外框尺寸。居中地形圆的直径为 `max_size × (1 - 2 × text_boundary_percent / 100)`，其余外框保持在底座顶面的平坦高度。默认文字边界 15% 保留原来的 70% 地形直径。六边形需要大于约 6.7% 才能在较窄两侧留出文字带；字形及边距可能需要更多空间。
+- 指定 `--text` 后，`--max-size` 控制方形、圆形或六边形外框尺寸。居中地形圆的直径为 `max_size × (1 - 2 × text_boundary_percent / 100)`，其余外框保持在底座顶面的平坦高度。默认文字边界 7% 保留 86% 地形直径。六边形需要大于约 6.7% 才能在较窄两侧留出文字带；字形及边距可能需要更多空间。
 - 数值 `--route-boundary-percent` 在缩放前给最小路线外形增加边界：方形边长乘以 `1 + 2 × route_boundary_percent / 100`，圆形或六边形半径乘以 `1 + route_boundary_percent / 100`，路线宽度另行预留。改变路线边界不会改变文字带。无文字时忽略文字边界，使用完整生成外形。
 - 在 3MF 输出中，生成的棱柱或提供的自定义 STL 会保留为独立的 `Base` 对象。启用的起伏地形是另一个独立水密的 `Topography` 对象，并略微伸入底座以确保切片可靠。禁用地形时不会生成该对象。
 - 文字默认使用 DejaVu Sans，并沿周长切线方向形成紧凑文字段。`--text-align` 相对底部接缝定位文字段，不会拉伸字符间距。省略 `--font-size` 时自动适配字高；可用字体族、粗细和样式选项选择已安装变体，或用 `--font-file` 精确指定一个字体文件。缺少字体、变体或字形时会明确报错。
@@ -591,15 +591,15 @@ NE 使用 `u = (1, 1) / sqrt(2)` 及自身的路线投影跨度，而不是北�
 
 每次搜索窗口后，日志报告搜索距离和全部八方向状态：已找到且稳定的山谷边界、等待稳定的候选边界、或未确定及其原因。最终结果区分完整识别、部分回退、全部回退，逐方向报告已找到山谷边界或使用回退，并列出留白距离、百分比基准及适用的回退原因。另行报告最终打印外形在全部八方向的实际投影留白；这些值可能超过 100%，不等于请求的地理选择限制。路线投影跨度为零时，实际外形留白的百分比会明确标为未定义，避免误导。
 
-默认最多从路线包围盒每侧向外搜索 20 km，可通过 `--auto-boundary-max-distance-km` 或 JSON `auto_boundary_max_distance_km` 修改。更大窗口可能增加处理时间、内存、DEM 下载和 API 成本。程序可按现有 `--topo-source` 策略获取更大 DEM 覆盖；`local` 绝不下载，显式 `--topo-file` 必须覆盖所需区域。最终可打印外形所需的数据范围可能超出搜索区域。
+默认最多从路线包围盒每侧向外搜索 10 km，可通过 `--auto-boundary-max-distance-km` 或 JSON `auto_boundary_max_distance_km` 修改。更大窗口可能增加处理时间、内存、DEM 下载和 API 成本。程序可按现有 `--topo-source` 策略获取更大 DEM 覆盖；`local` 绝不下载，显式 `--topo-file` 必须覆盖所需区域。最终可打印外形所需的数据范围可能超出搜索区域。
 
 缺失或非有限 DEM 高程、有效分辨率不足、资源限制、无效输入以及意外失败仍会明确报错，不属于回退条件。方向回退不会放宽 DEM 覆盖要求。可改用更好的本地 DEM 或适当调整搜索上限；仍可显式选择数值边界，例如 `--route-boundary-percent 10`。
 
-自动检测使用固定锚点的 90 m 分析网格，最多 1,000,000 个单元，并要求实际参与采样的 DEM 像素不大于 270 m。需要至少 60 m 的可观测高差，以及可识别的低处谷底。保守默认值保持不变：约 900 m 邻域内平滑高差不超过 1 m，坡度不超过 0.2%，且高于窗口第 10 百分位高程基准的高度不超过 `min(20 m, 窗口高差的 3%)`。对于狭窄、不平整、倾斜或位置较高的山谷，这些条件可能过严；路线起终点附近可见的局部山谷，不一定是整个邻域内低且近乎水平的谷底。
+自动检测使用固定锚点的 90 m 分析网格，最多 1,000,000 个单元，并要求实际参与采样的 DEM 像素不大于 270 m。需要至少 60 m 的可观测高差，以及可用的山顶/山谷证据。默认山谷条件现在非常宽松：约 900 m 邻域内平滑高差可达 1000 m，坡度可达 100%（45°），且高于窗口第 10 百分位高程基准的高度不超过 `min(1000 m, 窗口高差的 100%)`。这些默认值可能把山坡归类为山谷，或在分割中抹去前景山顶，导致没有可用山体区域并触发回退，而非识别成功。证据要求、独立方向稳定性检查、回退规则和明确报错行为保持不变。
 
-四项阈值均可通过 CLI 和 JSON 设置修改（JSON 键将连字符换为下划线）。必须为有限非负数，高度百分比不得超过 100。增大数值可放宽条件，但所有条件必须同时满足：如果邻域高差或基准高度仍不符合要求，仅放宽坡度不会有效。有效高度上限始终为米制上限与高差百分比上限中的**较小值**。这些选项只影响自动边界，数值边界模式保持不变。
+四项阈值均可通过 CLI 和 JSON 设置修改（JSON 键将连字符换为下划线）。必须为有限非负数，高度百分比不得超过 100。增大数值可放宽条件，降低数值则收紧条件。所有条件必须同时满足：如果邻域高差或基准高度仍不符合要求，仅放宽坡度不会有效。有效高度上限始终为米制上限与高差百分比上限中的**较小值**。这些选项只影响自动边界，数值边界模式保持不变。
 
-例如，可尝试较宽松的条件：
+例如，降低全部四项阈值，可尝试比默认值更保守的条件：
 
 ```bash
 python -m gpx2stl route.gpx --route-boundary-percent auto --auto-valley-max-relief-m 35 --auto-valley-max-slope-percent 3 --auto-valley-max-height-m 150 --auto-valley-max-height-percent 15

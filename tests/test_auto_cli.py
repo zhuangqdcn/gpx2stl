@@ -6,31 +6,37 @@ from pathlib import Path
 import pytest
 
 from gpx2stl.cli import config_from_args, configs_from_args, create_parser, load_settings
+from gpx2stl.auto_boundary import ValleyCriteria
 from gpx2stl.models import Config
 
 
 VALLEY_DEFAULTS = {
-    "auto_valley_max_relief_m": 1.0,
-    "auto_valley_max_slope_percent": 0.2,
-    "auto_valley_max_height_m": 20.0,
-    "auto_valley_max_height_percent": 3.0,
+    "auto_valley_max_relief_m": 1000.0,
+    "auto_valley_max_slope_percent": 100.0,
+    "auto_valley_max_height_m": 1000.0,
+    "auto_valley_max_height_percent": 100.0,
 }
 
 
 @pytest.mark.parametrize("topo", [True, False])
 def test_omitted_boundary_default_depends_on_topography(simple_gpx: Path, topo: bool) -> None:
     parser = create_parser()
-    config = config_from_args(
-        parser.parse_args([str(simple_gpx), "--topo" if topo else "--no-topo"]),
-        parser,
-    )
+    args = parser.parse_args([str(simple_gpx), "--topo" if topo else "--no-topo"])
+    config = config_from_args(args, parser)
     assert config.route_boundary_percent == ("auto" if topo else 10.0)
-    assert config.auto_boundary_max_distance_km == 20.0
+    assert args.route_boundary_percent is None
+    assert args.auto_boundary_max_distance_km == config.auto_boundary_max_distance_km == 10.0
     programmatic = Config(gpx_file=simple_gpx, output=config.output, topo=topo)
     assert programmatic.resolved_route_boundary_percent == ("auto" if topo else 10.0)
+    assert programmatic.auto_boundary_max_distance_km == 10.0
+    assert args.text_boundary_percent == config.text_boundary_percent == 7.0
+    assert programmatic.text_boundary_percent == 7.0
+    detector = ValleyCriteria()
     for name, default in VALLEY_DEFAULTS.items():
+        assert getattr(args, name) == default
         assert getattr(config, name) == default
         assert getattr(programmatic, name) == default
+        assert getattr(detector, name.removeprefix("auto_valley_")) == default
 
 
 def test_explicit_auto_cli_preserves_independent_text_boundary(simple_gpx: Path) -> None:
@@ -49,6 +55,38 @@ def test_explicit_auto_cli_preserves_independent_text_boundary(simple_gpx: Path)
     assert config.resolved_route_boundary_percent == "auto"
     assert config.text_boundary_percent == 20.0
     assert config.auto_boundary_max_distance_km == 12.5
+
+
+@pytest.mark.parametrize("topo", [True, False])
+@pytest.mark.parametrize("padding", [0.0, 10.0, 25.0])
+def test_explicit_numeric_boundary_overrides_programmatic_default(simple_gpx, topo, padding):
+    config = Config(
+        gpx_file=simple_gpx, output=simple_gpx.with_suffix(".3mf"),
+        topo=topo, route_boundary_percent=padding,
+        auto_boundary_max_distance_km=20.0, text_boundary_percent=15.0,
+        auto_valley_max_relief_m=1.0, auto_valley_max_slope_percent=0.2,
+        auto_valley_max_height_m=20.0, auto_valley_max_height_percent=3.0,
+    )
+    assert config.resolved_route_boundary_percent == padding
+    assert config.auto_boundary_max_distance_km == 20.0
+    assert config.text_boundary_percent == 15.0
+    assert tuple(getattr(config, name) for name in VALLEY_DEFAULTS) == (1, 0.2, 20, 3)
+
+
+def test_help_reports_requested_defaults():
+    parser = create_parser()
+    expected = {
+        "auto_boundary_max_distance_km": "default: 10",
+        "auto_valley_max_relief_m": "default: 1000",
+        "auto_valley_max_slope_percent": "default: 100",
+        "auto_valley_max_height_m": "default: 1000",
+        "auto_valley_max_height_percent": "default: 100",
+        "text_boundary_percent": "default: 7",
+        "route_boundary_percent": "default: auto with topo, 10 without",
+    }
+    for action in parser._actions:
+        if action.dest in expected:
+            assert expected[action.dest] in action.help
 
 
 @pytest.mark.parametrize(
@@ -145,7 +183,12 @@ def test_auto_settings_apply_to_batch_activity_inputs(
     activity = request.getfixturevalue(activity_fixture)
     second = tmp_path / ("second" + activity.suffix)
     second.write_bytes(activity.read_bytes())
-    thresholds = {name: value * 2 for name, value in VALLEY_DEFAULTS.items()}
+    thresholds = {
+        "auto_valley_max_relief_m": 2.0,
+        "auto_valley_max_slope_percent": 0.4,
+        "auto_valley_max_height_m": 40.0,
+        "auto_valley_max_height_percent": 6.0,
+    }
     parser = create_parser({
         "route_boundary_percent": "auto",
         "auto_boundary_max_distance_km": 10,

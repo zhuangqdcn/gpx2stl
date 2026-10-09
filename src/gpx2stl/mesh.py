@@ -737,10 +737,11 @@ def _generated_text_layout(config: Config, inner_radius: float) -> _PerimeterTex
             "The terrain circle leaves no text band inside the generated frame; "
             "increase --text-boundary-percent."
         )
+    # Keep automatic clearance from consuming narrow bands, especially on hex frames.
     margin = (
         config.text_margin
         if config.text_margin is not None
-        else max(0.5, frame_width * 0.1)
+        else min(max(0.5, frame_width * 0.1), frame_width * 0.25)
     )
     available_height = frame_width - 2.0 * margin
     text_area = (

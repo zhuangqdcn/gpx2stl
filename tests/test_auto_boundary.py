@@ -39,7 +39,10 @@ def cone(x, y, cx=0, cy=0, rx=1200, ry=1200, height=500):
     return height * np.maximum(0, 1 - distance)
 
 
-def discover(activity, function, cap=20, *, valley_criteria=boundary.ValleyCriteria()):
+def discover(
+    activity, function, cap=20, *,
+    valley_criteria=boundary.ValleyCriteria(1, 0.2, 20, 3),
+):
     dem = AnalyticDem(function)
     requests = []
 
@@ -393,7 +396,10 @@ def test_cap_is_not_exceeded_and_grid_has_no_silent_coarsening(monkeypatch):
         distances.append(float(activity.points[:, 1].min() - perimeter[0, 1]))
         return dem
 
-    result = boundary.discover_auto_boundary(activity, 20, load, progress=lambda _: None)
+    result = boundary.discover_auto_boundary(
+        activity, 20, load, progress=lambda _: None,
+        valley_criteria=boundary.ValleyCriteria(1, 0.2, 20, 3),
+    )
     assert not any(item.resolved for item in result.directions)
     assert distances == [2000, 4000, 8000, 16000, 20000]
 
@@ -421,7 +427,8 @@ def test_actual_projected_dem_sampler_and_result_source_are_reused():
     )
     dem = DemSource((tile,), require_complete_coverage=True)
     result = boundary.discover_auto_boundary(
-        activity, 20, lambda _: dem, progress=lambda _: None
+        activity, 20, lambda _: dem, progress=lambda _: None,
+        valley_criteria=boundary.ValleyCriteria(1, 0.2, 20, 3),
     )
     assert result.dem is dem
     assert result.region_count == 1
@@ -445,7 +452,8 @@ def test_request_uses_existing_antimeridian_split():
         return dem
 
     result = boundary.discover_auto_boundary(
-        activity, 20, load, progress=lambda _: None
+        activity, 20, load, progress=lambda _: None,
+        valley_criteria=boundary.ValleyCriteria(1, 0.2, 20, 3),
     )
     assert result.region_count == 1
     assert all(len(bounds) == 2 for bounds in requests)

@@ -188,8 +188,8 @@ def test_config_exposes_only_split_boundary_fields(simple_gpx: Path, topo: bool)
     config = Config(gpx_file=simple_gpx, output=simple_gpx.with_suffix(".3mf"), topo=topo)
     assert config.route_boundary_percent is None
     assert config.resolved_route_boundary_percent == ("auto" if topo else 10.0)
-    assert config.auto_boundary_max_distance_km == 20.0
-    assert config.text_boundary_percent == 15.0
+    assert config.auto_boundary_max_distance_km == 10.0
+    assert config.text_boundary_percent == 7.0
     names = {field.name for field in fields(Config)}
     assert "boundary_percent" not in names
     assert "inner_size_percent" not in names
@@ -289,7 +289,7 @@ def test_generated_route_padding_preserves_terrain_and_text_size(
 ) -> None:
     config = Config(
         gpx_file=simple_gpx, output=tmp_path / "unused.3mf", shape=shape,
-        max_size=40, text=text, route_boundary_percent=0,
+        max_size=40, text=text, route_boundary_percent=0, text_boundary_percent=15,
     )
     unpadded = _capture_conversion(config, monkeypatch)
     padded = _capture_conversion(replace(config, route_boundary_percent=30), monkeypatch)
@@ -371,7 +371,7 @@ def test_custom_route_padding_changes_fit_not_terrain_or_base(
     ).export(base, file_type="stl")
     config = Config(
         gpx_file=simple_gpx, output=tmp_path / "unused.3mf", base_stl=base,
-        text=text, route_boundary_percent=0,
+        text=text, route_boundary_percent=0, text_boundary_percent=15,
     )
     first = _capture_conversion(config, monkeypatch)
     second = _capture_conversion(replace(config, route_boundary_percent=25), monkeypatch)

@@ -32,7 +32,7 @@ def test_cli_defaults(simple_gpx: Path, monkeypatch: pytest.MonkeyPatch) -> None
     assert config.route_height == 2.0
     assert config.route_boundary_percent == "auto"
     assert config.resolved_route_boundary_percent == "auto"
-    assert config.auto_boundary_max_distance_km == 20.0
+    assert config.auto_boundary_max_distance_km == 10.0
     assert config.shape == "square"
     assert config.text is None
     assert config.text_height == 1.0
@@ -41,7 +41,7 @@ def test_cli_defaults(simple_gpx: Path, monkeypatch: pytest.MonkeyPatch) -> None
     assert config.text_align == "center"
     assert config.text_mode == "raised"
     assert config.text_depth == 0.6
-    assert config.text_boundary_percent == 15.0
+    assert config.text_boundary_percent == 7.0
     assert config.font_family == "DejaVu Sans"
     assert config.font_file is None
     assert config.font_size is None

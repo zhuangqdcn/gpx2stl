@@ -7,12 +7,13 @@ import pytest
 import rasterio
 import trimesh
 from rasterio.transform import from_bounds
-from shapely.geometry import Polygon
+from shapely.geometry import Point, Polygon
 
 import gpx2stl.pipeline
 from gpx2stl.dem import DemSource, GeographicBounds
 from gpx2stl.errors import Gpx2StlError
 from gpx2stl.models import Config, TopoSource
+from gpx2stl.mesh import _generated_text_layout, _model_outline
 from gpx2stl.pipeline import convert, resolve_dem
 
 
@@ -123,6 +124,7 @@ def test_text_conversion_uses_circular_inset_and_three_materials(
             shape="hex",
             text="TRAIL",
             max_size=20.0,
+            text_boundary_percent=15.0,
         ),
         progress=messages.append,
     )
@@ -133,6 +135,64 @@ def test_text_conversion_uses_circular_inset_and_three_materials(
     )
     assert any(message.startswith("Generated text mesh") for message in messages)
     assert "Writing 3-object, 4-material 3MF package" in messages
+
+
+@pytest.mark.parametrize("shape", ["square", "circle", "hex"])
+@pytest.mark.parametrize("text_mode", ["raised", "embedded"])
+def test_default_text_band_auto_fits_generated_frame(
+    simple_gpx: Path, tmp_path: Path, shape, text_mode,
+) -> None:
+    config = Config(
+        gpx_file=simple_gpx, output=tmp_path / "default-text.3mf",
+        topo=False, shape=shape, text="TRAIL", text_mode=text_mode,
+    )
+    assert config.text_boundary_percent == 7.0
+    assert config.terrain_size == pytest.approx(172.0)
+    inner_radius = config.terrain_size / 2
+    layout = _generated_text_layout(config, inner_radius)
+    frame = Polygon(_model_outline(shape, config.max_size)).difference(
+        Point(0, 0).buffer(inner_radius, quad_segs=64)
+    )
+    assert layout.polygons
+    assert all(frame.buffer(1e-7).covers(glyph) for glyph in layout.polygons)
+    messages = []
+    convert(config, progress=messages.append)
+    assert config.output.is_file()
+    assert any(
+        message.startswith(
+            f"Created {shape} frame with {config.terrain_size:.1f} mm circular terrain inset"
+        )
+        for message in messages
+    )
+    assert any(message.startswith("Generated text mesh") for message in messages)
+    assert "Validated 3MF mesh and material resources" in messages
+
+
+@pytest.mark.parametrize("shape", ["square", "circle", "hex"])
+@pytest.mark.parametrize("text_mode", ["raised", "embedded"])
+def test_default_text_band_rejects_excessive_explicit_margin(
+    simple_gpx: Path, tmp_path: Path, shape, text_mode,
+) -> None:
+    config = Config(
+        gpx_file=simple_gpx, output=tmp_path / "oversized-margin.3mf",
+        topo=False, shape=shape, text="TRAIL", text_mode=text_mode,
+        text_margin=20.0,
+    )
+    with pytest.raises(Gpx2StlError, match="(too narrow|cannot fit).*--text-margin"):
+        convert(config, progress=lambda _: None)
+    assert not config.output.exists()
+
+
+def test_tiny_hex_default_text_band_reports_fit_guidance(
+    simple_gpx: Path, tmp_path: Path,
+) -> None:
+    config = Config(
+        gpx_file=simple_gpx, output=tmp_path / "tiny-hex.3mf",
+        topo=False, shape="hex", text="TRAIL", max_size=20.0,
+    )
+    with pytest.raises(Gpx2StlError, match="cannot fit.*--text-boundary-percent"):
+        convert(config, progress=lambda _: None)
+    assert not config.output.exists()
 
 
 def test_conversion_preserves_custom_stl_dimensions(

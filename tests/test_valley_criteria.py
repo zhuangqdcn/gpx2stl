@@ -23,7 +23,7 @@ def test_height_percentage_cannot_exceed_observed_relief():
         boundary.ValleyCriteria(max_height_percent=100.1)
 
 
-def test_default_valley_mask_matches_original_conditions():
+def test_strict_valley_mask_matches_original_conditions():
     y, x = np.mgrid[-40:41, -40:41]
     height = ndimage.gaussian_filter(
         500 * np.maximum(0, 1 - np.hypot(x, y) / 20), 1.5
@@ -40,10 +40,39 @@ def test_default_valley_mask_matches_original_conditions():
         & (np.hypot(dx, dy) <= 0.002)
     )
     actual = boundary._valley_background(
-        height, floor, relief, boundary.ValleyCriteria(), 11
+        height, floor, relief, boundary.ValleyCriteria(1, 0.2, 20, 3), 11
     )
     assert np.any(expected)
     np.testing.assert_array_equal(actual, expected)
+
+
+def test_default_valley_markers_include_sloping_high_cells():
+    height = np.tile(np.arange(21) * 45.0, (21, 1))
+    defaults = boundary.ValleyCriteria()
+    assert defaults == boundary.ValleyCriteria(1000, 100, 1000, 100)
+    permissive = boundary._valley_background(height, 0, 900, defaults, 11)
+    strict = boundary._valley_background(
+        height, 0, 900, boundary.ValleyCriteria(1, 0.2, 20, 3), 11
+    )
+    assert np.all(permissive)
+    assert not np.any(strict)
+    assert not np.any(boundary._valley_background(height, -1001, 2000, defaults, 11))
+
+
+def test_default_segment_treats_permissive_summit_cells_as_background():
+    y, x = np.mgrid[-40:41, -40:41]
+    elevation = 500 * np.maximum(0, 1 - np.hypot(x, y) / 20) + x * 0.9
+    corridor = np.zeros(elevation.shape, dtype=np.bool_)
+    corridor[40, 45:51] = True
+    selected, count, reason = boundary._segment(elevation, corridor)
+    assert count == 0
+    assert reason == "no resolved summit markers"
+    assert np.all(selected)
+    explicit = boundary._segment(
+        elevation, corridor, boundary.ValleyCriteria(1000, 100, 1000, 100)
+    )
+    np.testing.assert_array_equal(selected, explicit[0])
+    assert (count, reason) == explicit[1:]
 
 
 @pytest.mark.parametrize(
@@ -88,7 +117,7 @@ def test_relaxing_thresholds_expands_marker_set_without_bypassing_other_checks()
     floor = float(np.percentile(height, 10))
     relief = float(height.max() - floor)
     strict = boundary._valley_background(
-        height, floor, relief, boundary.ValleyCriteria(), 11
+        height, floor, relief, boundary.ValleyCriteria(1, 0.2, 20, 3), 11
     )
     relaxed = boundary._valley_background(
         height, floor, relief, boundary.ValleyCriteria(20, 2, 100, 20), 11
@@ -104,7 +133,9 @@ def test_relaxed_valley_markers_enable_segmentation_of_a_sloping_floor():
     elevation = 500 * np.maximum(0, 1 - np.hypot(x, y) / 20) + x * 0.9
     corridor = np.zeros(elevation.shape, dtype=np.bool_)
     corridor[40, 45:51] = True
-    _, strict_count, strict_reason = boundary._segment(elevation, corridor)
+    _, strict_count, strict_reason = boundary._segment(
+        elevation, corridor, boundary.ValleyCriteria(1, 0.2, 20, 3)
+    )
     selected, relaxed_count, relaxed_reason = boundary._segment(
         elevation, corridor, boundary.ValleyCriteria(20, 2, 100, 20)
     )
