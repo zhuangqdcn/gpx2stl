@@ -17,9 +17,11 @@ import numpy as np
 from numpy.typing import NDArray
 from pyproj import Transformer
 from scipy import ndimage
-from shapely.geometry import Polygon, box
+from scipy.spatial import cKDTree
+from shapely.geometry import LineString, Point, Polygon
 
 from gpx2stl.dem import DemSource, GeographicBounds, request_projected_bounds
+from gpx2stl.directions import DIRECTIONS, route_projections, support_polygon
 from gpx2stl.errors import Gpx2StlError
 from gpx2stl.models import ProjectedRoute
 from gpx2stl.progress import ProgressCallback, console_progress
@@ -46,11 +48,50 @@ MAX_DEM_PIXEL_M = 3.0 * GRID_SPACING_M
 
 
 @dataclass(frozen=True)
+class ValleyCriteria:
+    max_relief_m: float = VALLEY_RELIEF_M
+    max_slope_percent: float = 100 * VALLEY_SLOPE
+    max_height_m: float = 20.0
+    max_height_percent: float = 3.0
+
+    def __post_init__(self) -> None:
+        for name in (
+            "max_relief_m", "max_slope_percent", "max_height_m", "max_height_percent"
+        ):
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or value < 0
+            ):
+                raise Gpx2StlError(
+                    f"Automatic valley {name} must be a finite nonnegative number."
+                )
+        if self.max_height_percent > 100:
+            raise Gpx2StlError(
+                "Automatic valley max_height_percent must not exceed 100."
+            )
+
+
+@dataclass(frozen=True)
+class DirectionalBoundary:
+    direction: str
+    resolved: bool
+    reason: str
+    support_limit: float
+    padding_m: float
+    span_m: float
+    used_zero_span_basis: bool = False
+
+
+@dataclass(frozen=True)
 class AutoBoundaryResult:
     envelope: Polygon
     dem: DemSource
     region_count: int
     search_distance_m: float
+    directions: tuple[DirectionalBoundary, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -257,8 +298,32 @@ def _watershed(
     return labels
 
 
+def _valley_background(
+    height: NDArray[np.float64],
+    floor: float,
+    relief: float,
+    criteria: ValleyCriteria,
+    local_size: int,
+) -> NDArray[np.bool_]:
+    local_range = (
+        ndimage.maximum_filter(height, size=local_size)
+        - ndimage.minimum_filter(height, size=local_size)
+    )
+    dy, dx = np.gradient(height, GRID_SPACING_M)
+    # Low, flat cells are valley-floor markers, not arbitrarily clipped search edges.
+    return (
+        (height <= floor + min(
+            criteria.max_height_m, criteria.max_height_percent / 100 * relief
+        ))
+        & (local_range <= criteria.max_relief_m)
+        & (np.hypot(dx, dy) <= criteria.max_slope_percent / 100)
+    )
+
+
 def _segment(
-    elevation: NDArray[np.float64], corridor: NDArray[np.bool_]
+    elevation: NDArray[np.float64],
+    corridor: NDArray[np.bool_],
+    criteria: ValleyCriteria = ValleyCriteria(),
 ) -> tuple[NDArray[np.bool_], int, str | None]:
     height = ndimage.gaussian_filter(elevation, SMOOTHING_SIGMA_M / GRID_SPACING_M)
     floor = float(np.percentile(height, 10))
@@ -269,17 +334,7 @@ def _segment(
             f"flat or ambiguous terrain (less than {MIN_RELIEF_M:g} m observed relief)",
         )
     local_size = 2 * math.ceil(SUMMIT_SEPARATION_M / GRID_SPACING_M) + 1
-    local_range = (
-        ndimage.maximum_filter(height, size=local_size)
-        - ndimage.minimum_filter(height, size=local_size)
-    )
-    dy, dx = np.gradient(height, GRID_SPACING_M)
-    # Low, flat cells are valley-floor markers, not arbitrarily clipped search edges.
-    background = (
-        (height <= floor + min(20.0, 0.03 * relief))
-        & (local_range <= VALLEY_RELIEF_M)
-        & (np.hypot(dx, dy) <= VALLEY_SLOPE)
-    )
+    background = _valley_background(height, floor, relief, criteria, local_size)
     if not np.any(background):
         # No observable valley floor: caller must enlarge the search window.
         return np.ones(height.shape, dtype=np.bool_), 0, "no observable valley floor"
@@ -326,22 +381,136 @@ def _keys(selected: NDArray[np.bool_], grid: _Grid) -> NDArray:
     ).ravel()
 
 
+@dataclass(frozen=True)
+class _DirectionalEvidence:
+    support: float
+    keys: NDArray
+    interior: bool
+    grid_bounds: tuple[int, int, int, int] | None = None
+
+
+def _directional_evidence(
+    selected: NDArray[np.bool_], grid: _Grid
+) -> tuple[_DirectionalEvidence, ...]:
+    rows, cols = np.nonzero(selected)
+    if not len(rows):
+        raise _failure("selected mountain regions contain no analysis cells")
+    centers = np.column_stack((grid.x[cols], grid.y[rows])) * GRID_SPACING_M
+    keys = _keys(selected, grid)
+    evidence = []
+    for direction in DIRECTIONS:
+        ux, uy = direction.vector
+        projected = centers @ np.asarray(direction.vector)
+        support = float(projected.max())
+        strip = projected >= support - 2 * EDGE_GUARD_CELLS * GRID_SPACING_M
+        outward_edge = (
+            ((rows >= len(grid.y) - EDGE_GUARD_CELLS) & (uy > 0))
+            | ((rows < EDGE_GUARD_CELLS) & (uy < 0))
+            | ((cols >= len(grid.x) - EDGE_GUARD_CELLS) & (ux > 0))
+            | ((cols < EDGE_GUARD_CELLS) & (ux < 0))
+        )
+        grid_bounds = (int(grid.x[0]), int(grid.y[0]), int(grid.x[-1]), int(grid.y[-1]))
+        evidence.append(_DirectionalEvidence(support, keys, not np.any(outward_edge & strip), grid_bounds))
+    return tuple(evidence)
+
+
+def _direction_stable(previous: _DirectionalEvidence, current: _DirectionalEvidence, vector) -> bool:
+    tolerance = GRID_SPACING_M * sum(abs(value) for value in vector)
+    if not current.interior or abs(previous.support - current.support) > tolerance:
+        return False
+    # Compare the same spatial strip in both windows, not watershed label IDs.
+    threshold = min(previous.support, current.support) - 2 * EDGE_GUARD_CELLS * GRID_SPACING_M
+    ux, uy = vector
+
+    def strip(keys):
+        projections = (keys["x"] * ux + keys["y"] * uy) * GRID_SPACING_M
+        inside = projections >= threshold
+        # Tangential growth into newly sampled terrain must not invalidate an
+        # unchanged directional boundary. Reassignment in shared coverage does.
+        for bounds in (previous.grid_bounds, current.grid_bounds):
+            if bounds is not None:
+                inside &= (
+                    (keys["x"] >= bounds[0]) & (keys["y"] >= bounds[1])
+                    & (keys["x"] <= bounds[2]) & (keys["y"] <= bounds[3])
+                )
+        return keys[inside]
+
+    first, second = strip(previous.keys), strip(current.keys)
+    if not len(first) or not len(second):
+        return False
+    # The support tolerance permits one-cell contour jitter, not disappearance
+    # or reassignment of a spatial patch farther from the previous boundary.
+    def coordinates(keys):
+        return np.column_stack((keys["x"], keys["y"]))
+
+    a, b = coordinates(first), coordinates(second)
+    changed = (
+        np.count_nonzero(cKDTree(a).query(b, p=np.inf)[0] > 1)
+        + np.count_nonzero(cKDTree(b).query(a, p=np.inf)[0] > 1)
+    )
+    return changed <= STABILITY_FRACTION * max(len(first), len(second))
+
+
+def _finish(
+    route: ProjectedRoute, dem: DemSource, region_count: int, distance: float,
+    evidence: tuple[_DirectionalEvidence, ...] | None, resolved: list[bool],
+    reasons: list[str], progress: ProgressCallback,
+) -> AutoBoundaryResult:
+    maxima, spans = route_projections(route.points)
+    largest_span = float(spans.max())
+    results = []
+    for index, direction in enumerate(DIRECTIONS):
+        substituted = False
+        basis = float(spans[index])
+        if resolved[index]:
+            assert evidence is not None
+            cell_extent = GRID_SPACING_M / 2 * sum(abs(value) for value in direction.vector)
+            limit = max(float(maxima[index]), evidence[index].support + cell_extent + SAFETY_BUFFER_M)
+            padding = limit - float(maxima[index])
+            percentage = f"{100 * padding / basis:.1f}%" if basis else "percentage undefined: zero route span"
+            progress(f"{direction.name}: valley boundary found; padding {padding:.1f} m ({percentage})")
+        else:
+            if not basis:
+                if not largest_span:
+                    raise _failure("all eight projected route spans are zero; fallback requires a nondegenerate route")
+                basis = largest_span
+                substituted = True
+                progress(f"Warning: {direction.name} has zero projected route span; "
+                         f"using largest nonzero eight-direction span {basis:.1f} m")
+            padding = basis
+            limit = float(maxima[index]) + padding
+            progress(f"Warning: {direction.name}: valley boundary not found; using 100% fallback "
+                     f"{padding:.1f} m; reason: {reasons[index]}; "
+                     f"distance basis: {'largest nonzero eight-direction' if substituted else 'route projected'} "
+                     f"span {basis:.1f} m")
+        results.append(DirectionalBoundary(direction.name, resolved[index], reasons[index],
+                                           limit, padding, basis, substituted))
+    envelope = support_polygon(np.asarray([item.support_limit for item in results]), route.points[0])
+    for path in route.paths:
+        geometry = LineString(path) if len(path) > 1 else Point(path[0])
+        if not envelope.covers(geometry):
+            raise _failure("directional polygon does not contain the complete route")
+    if not all(resolved):
+        progress("Warning: unresolved directional 100% fallback limits take priority and may crop "
+                 "terrain in adjacent detected directions; complete mountain coverage is not guaranteed. "
+                 "Selection padding is not final printable-footprint padding.")
+    return AutoBoundaryResult(envelope, dem, region_count, distance, tuple(results))
+
+
 def discover_auto_boundary(
     route: ProjectedRoute,
     max_distance_km: float,
     load_dem: Callable[[tuple[GeographicBounds, ...]], DemSource],
     progress: ProgressCallback = console_progress,
+    *,
+    valley_criteria: ValleyCriteria = ValleyCriteria(),
 ) -> AutoBoundaryResult:
-    """Estimate all route-touched mountain regions, or fail without a fallback.
+    """Estimate eight independent terrain supports, falling back only at the cap.
 
-    Two nested searches must agree to within 0.5% of selected cells, have extrema
-    within one cell, and have an interior boundary. The rectangle includes full boundary cells, a
-    90 m safety buffer, and every route vertex (therefore every route segment).
-    Loader requests include the entire discovery window; the caller may reuse
-    tiles/cache through its normal DEM resolver. Inconclusive low-relief windows
-    are retried up to the cap: a foothill window need not contain its summit.
-    No missing elevations are filled. Reliable flat valley floors are required;
-    diffuse mountain-to-plain transitions are not guaranteed exact boundaries.
+    Reliable directional strips must be interior and spatially stable between
+    nested windows. Detected supports include whole cells and a 90 m margin.
+    Unresolved supports use 100% of the route's directional span. Missing DEM,
+    inadequate resolution, and resource/geometry failures remain hard errors.
     """
     if not math.isfinite(max_distance_km) or max_distance_km <= 0:
         raise _failure("maximum search distance must be finite and positive")
@@ -349,12 +518,18 @@ def discover_auto_boundary(
     if points.ndim != 2 or points.shape[1] != 2 or not len(points) or not np.all(np.isfinite(points)):
         raise _failure("route has no finite projected coordinates")
     route_bounds = np.concatenate((points.min(axis=0), points.max(axis=0)))
+    progress(
+        f"Automatic valley criteria: local variation <= {valley_criteria.max_relief_m:g} m "
+        f"over 900 m; slope <= {valley_criteria.max_slope_percent:g}%; "
+        f"height above window's 10th-percentile floor <= min("
+        f"{valley_criteria.max_height_m:g} m, "
+        f"{valley_criteria.max_height_percent:g}% of observed relief)"
+    )
     cap = max_distance_km * 1000.0
     # Leave a second nested window even for caps below the normal 2 km start.
     # Three quarters retains enough smoothing/flat-floor context in small caps.
     distance = min(INITIAL_SEARCH_DISTANCE_M, cap * 0.75)
     previous = None
-    previous_count = None
     while True:
         bounds = route_bounds + np.array([-distance, -distance, distance, distance])
         grid = _grid(bounds)
@@ -367,42 +542,32 @@ def discover_auto_boundary(
         dem = load_dem(request_projected_bounds(perimeter, route))
         _check_resolution(dem, route, grid)
         elevation = _sample(dem, route, grid)
-        selected, region_count, unresolved = _segment(elevation, _route_cells(route, grid))
-        edge = (
-            np.any(selected[:EDGE_GUARD_CELLS])
-            or np.any(selected[-EDGE_GUARD_CELLS:])
-            or np.any(selected[:, :EDGE_GUARD_CELLS])
-            or np.any(selected[:, -EDGE_GUARD_CELLS:])
+        selected, region_count, unresolved = _segment(
+            elevation, _route_cells(route, grid), valley_criteria
         )
-        keys = _keys(selected, grid) if region_count else None
-        stable = False
-        if previous is not None and keys is not None and previous_count == region_count:
-            changed = len(np.setxor1d(previous, keys, assume_unique=True))
-            stable = changed <= STABILITY_FRACTION * max(len(previous), len(keys))
-            for axis in ("x", "y"):
-                stable = stable and (
-                    abs(int(keys[axis].min()) - int(previous[axis].min())) <= 1
-                    and abs(int(keys[axis].max()) - int(previous[axis].max())) <= 1
-                )
-        if not edge and stable and region_count > 0:
-            rows, cols = np.nonzero(selected)
-            margin = GRID_SPACING_M / 2 + SAFETY_BUFFER_M
-            minimum = np.minimum(
-                [grid.x[cols.min()] * GRID_SPACING_M - margin,
-                 grid.y[rows.min()] * GRID_SPACING_M - margin], route_bounds[:2]
-            )
-            maximum = np.maximum(
-                [grid.x[cols.max()] * GRID_SPACING_M + margin,
-                 grid.y[rows.max()] * GRID_SPACING_M + margin], route_bounds[2:]
-            )
-            return AutoBoundaryResult(
-                box(*minimum, *maximum), dem, region_count, distance
-            )
-        if distance >= cap:
-            detail = f"{unresolved}; " if unresolved else ""
-            raise _failure(
-                f"{detail}mountain boundaries remain unresolved at the {max_distance_km:g} km "
-                "search limit (edge-touching or unstable terrain)"
-            )
-        previous, previous_count = keys, region_count
+        # A placeholder all-ones mask has no detected boundary evidence.
+        evidence = _directional_evidence(selected, grid) if region_count else None
+        resolved = []
+        reasons = []
+        for index, direction in enumerate(DIRECTIONS):
+            found = False
+            if evidence is None:
+                reason = unresolved or "no usable route-associated mountain regions"
+                status = f"unresolved: {reason}"
+            elif not evidence[index].interior:
+                reason = "directional boundary touches the search-edge guard"
+                status = f"unresolved: {reason}"
+            elif previous is not None and _direction_stable(previous[index], evidence[index], direction.vector):
+                found = True
+                reason = "interior directional boundary and selected geometry stable between nested windows"
+                status = "valley boundary found and stable"
+            else:
+                reason = "directional boundary awaiting spatial stability between nested windows"
+                status = f"candidate: {reason}"
+            resolved.append(found)
+            reasons.append(reason)
+            progress(f"Search {distance / 1000:g} km {direction.name}: {status}")
+        if all(resolved) or distance >= cap:
+            return _finish(route, dem, region_count, distance, evidence, resolved, reasons, progress)
+        previous = evidence
         distance = min(distance * 2, cap)

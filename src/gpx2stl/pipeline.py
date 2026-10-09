@@ -6,7 +6,7 @@ from numpy.typing import NDArray
 from shapely.geometry import LineString, Polygon
 
 from gpx2stl.activity import read_activity
-from gpx2stl.auto_boundary import discover_auto_boundary
+from gpx2stl.auto_boundary import ValleyCriteria, discover_auto_boundary
 from gpx2stl.custom_base import CustomBase, prepare_custom_base, sample_exterior
 from gpx2stl.dem import (
     DemSource,
@@ -19,6 +19,7 @@ from gpx2stl.dem import (
     request_bounds,
     request_projected_bounds,
 )
+from gpx2stl.directions import DIRECTIONS, route_projections
 from gpx2stl.errors import Gpx2StlError
 from gpx2stl.export import export_geometry
 from gpx2stl.footprint import (
@@ -105,25 +106,27 @@ def _validate_auto_fit(
 def _report_auto_clearances(
     perimeter: NDArray[np.float64], route: ProjectedRoute, progress: ProgressCallback
 ) -> None:
-    minimum = perimeter.min(axis=0)
-    maximum = perimeter.max(axis=0)
-    route_minimum = route.points.min(axis=0)
-    route_maximum = route.points.max(axis=0)
-    spans = route_maximum - route_minimum
-    sides = (
-        ("west", route_minimum[0] - minimum[0], spans[0]),
-        ("east", maximum[0] - route_maximum[0], spans[0]),
-        ("south", route_minimum[1] - minimum[1], spans[1]),
-        ("north", maximum[1] - route_maximum[1], spans[1]),
-    )
+    names = {
+        "N": "north", "NE": "northeast", "E": "east", "SE": "southeast",
+        "S": "south", "SW": "southwest", "W": "west", "NW": "northwest",
+    }
+    clearances: list[str] = []
+    route_maxima, spans = route_projections(route.points)
+    for index, direction in enumerate(DIRECTIONS):
+        vector = np.asarray(direction.vector)
+        span = float(spans[index])
+        distance = float(np.max(perimeter @ vector) - route_maxima[index])
+        percentage = (
+            f"({distance / span * 100:.1f}%)"
+            if span > 0
+            else "(percentage undefined: zero route span)"
+        )
+        clearances.append(
+            f"{direction.name} ({names[direction.name]}) {distance:.1f} m {percentage}"
+        )
     progress(
         "Effective automatic geographic clearances: "
-        + "; ".join(
-            f"{name} {distance:.1f} m "
-            + (f"({distance / span * 100:.1f}%)" if span > 0.0 else
-               "(percentage undefined: zero route span)")
-            for name, distance, span in sides
-        )
+        + "; ".join(clearances)
     )
 
 
@@ -214,10 +217,29 @@ def convert(
             config.auto_boundary_max_distance_km,
             lambda bounds: resolve_dem(config, bounds, progress),
             progress,
+            valley_criteria=ValleyCriteria(
+                max_relief_m=config.auto_valley_max_relief_m,
+                max_slope_percent=config.auto_valley_max_slope_percent,
+                max_height_m=config.auto_valley_max_height_m,
+                max_height_percent=config.auto_valley_max_height_percent,
+            ),
         )
+        fallback_count = sum(not direction.resolved for direction in discovery.directions)
+        if fallback_count == 8:
+            detection_summary = "No complete mountain boundary detected; using fallback in all 8 directions"
+        elif fallback_count:
+            detection_summary = (
+                f"Detected {discovery.region_count} mountain "
+                f"{'region' if discovery.region_count == 1 else 'regions'} "
+                f"with partial boundaries; using fallback in {fallback_count} of 8 directions"
+            )
+        else:
+            detection_summary = (
+                f"Detected {discovery.region_count} mountain "
+                f"{'region' if discovery.region_count == 1 else 'regions'}"
+            )
         progress(
-            f"Detected {discovery.region_count} mountain "
-            f"{'region' if discovery.region_count == 1 else 'regions'}; "
+            f"{detection_summary}; "
             f"search distance {discovery.search_distance_m / 1000:.2f} km "
             f"(configured cap {config.auto_boundary_max_distance_km:g} km)"
         )

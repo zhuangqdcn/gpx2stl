@@ -26,6 +26,10 @@ class Config:
     topo: bool = True
     route_boundary_percent: RouteBoundaryPercent | None = None
     auto_boundary_max_distance_km: float = 20.0
+    auto_valley_max_relief_m: float = 1.0
+    auto_valley_max_slope_percent: float = 0.2
+    auto_valley_max_height_m: float = 20.0
+    auto_valley_max_height_percent: float = 3.0
     text_boundary_percent: float = 15.0
     shape: Shape = "square"
     text: str | None = None

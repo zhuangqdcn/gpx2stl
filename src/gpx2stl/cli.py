@@ -24,6 +24,10 @@ SETTING_KEYS = {
     "topo",
     "route_boundary_percent",
     "auto_boundary_max_distance_km",
+    "auto_valley_max_relief_m",
+    "auto_valley_max_slope_percent",
+    "auto_valley_max_height_m",
+    "auto_valley_max_height_percent",
     "text_boundary_percent",
     "shape",
     "text",
@@ -77,6 +81,20 @@ class _ArgumentParser(argparse.ArgumentParser):
         super().error(message)
 
 
+class _ValleyThresholdAction(argparse.Action):
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: Any,
+        option_string: str | None = None,
+    ) -> None:
+        setattr(namespace, self.dest, values)
+        namespace._valley_threshold_overrides = (
+            namespace._valley_threshold_overrides | {self.dest}
+        )
+
+
 def _reject_retired_settings(settings: dict[str, Any]) -> None:
     for name, guidance in RETIRED_SETTINGS.items():
         if name in settings:
@@ -101,6 +119,13 @@ def _route_boundary_percentage(value: str) -> RouteBoundaryPercent:
     if value == "auto":
         return "auto"
     return _nonnegative(value)
+
+
+def _valley_height_percentage(value: str) -> float:
+    parsed = _nonnegative(value)
+    if parsed > 100:
+        raise argparse.ArgumentTypeError("must be less than or equal to 100")
+    return parsed
 
 
 def _text_boundary_percentage(value: str) -> float:
@@ -237,6 +262,38 @@ def create_parser(settings: dict[str, Any] | None = None) -> argparse.ArgumentPa
         help="maximum auto discovery expansion beyond each route side in km (default: 20)",
     )
     parser.add_argument(
+        "--auto-valley-max-relief-m",
+        action=_ValleyThresholdAction,
+        type=_nonnegative,
+        default=1.0,
+        help="maximum smoothed local variation over about 900 m for auto valleys in m "
+        "(default: 1; increasing loosens detection)",
+    )
+    parser.add_argument(
+        "--auto-valley-max-slope-percent",
+        action=_ValleyThresholdAction,
+        type=_nonnegative,
+        default=0.2,
+        help="maximum auto valley slope in percent (default: 0.2; increasing loosens detection)",
+    )
+    parser.add_argument(
+        "--auto-valley-max-height-m",
+        action=_ValleyThresholdAction,
+        type=_nonnegative,
+        default=20.0,
+        help="maximum auto valley height above the window floor in m, capped by "
+        "--auto-valley-max-height-percent of window relief "
+        "(default: 20; increasing loosens detection)",
+    )
+    parser.add_argument(
+        "--auto-valley-max-height-percent",
+        action=_ValleyThresholdAction,
+        type=_valley_height_percentage,
+        default=3.0,
+        help="maximum auto valley height above the window floor as percent of window relief, "
+        "capped by --auto-valley-max-height-m (0 to 100; default: 3; increasing loosens detection)",
+    )
+    parser.add_argument(
         "--shape",
         choices=("square", "circle", "hex"),
         default="square",
@@ -371,6 +428,14 @@ def create_parser(settings: dict[str, Any] | None = None) -> argparse.ArgumentPa
     )
     parser.set_defaults(**(settings or {}))
     parser.set_defaults(_route_boundary_explicit="route_boundary_percent" in (settings or {}))
+    parser.set_defaults(
+        _valley_threshold_overrides=frozenset(),
+        _valley_threshold_settings={
+            name: value
+            for name, value in (settings or {}).items()
+            if name.startswith("auto_valley_")
+        },
+    )
     return parser
 
 
@@ -490,6 +555,10 @@ def config_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser) 
             else "auto" if args.topo else 10.0
         ),
         auto_boundary_max_distance_km=args.auto_boundary_max_distance_km,
+        auto_valley_max_relief_m=args.auto_valley_max_relief_m,
+        auto_valley_max_slope_percent=args.auto_valley_max_slope_percent,
+        auto_valley_max_height_m=args.auto_valley_max_height_m,
+        auto_valley_max_height_percent=args.auto_valley_max_height_percent,
         text_boundary_percent=args.text_boundary_percent,
         shape=args.shape,
         text=text,
@@ -594,6 +663,11 @@ def configs_from_args(
 def _validate_setting_types(
     args: argparse.Namespace, parser: argparse.ArgumentParser
 ) -> None:
+    for name, value in args._valley_threshold_settings.items():
+        if name not in args._valley_threshold_overrides and (
+            isinstance(value, bool) or not isinstance(value, (int, float))
+        ):
+            parser.error(f"settings file value '{name}' must be a number")
     for name in (
         "gpx_file",
         "output",
@@ -609,6 +683,10 @@ def _validate_setting_types(
         "route_width",
         "route_height",
         "auto_boundary_max_distance_km",
+        "auto_valley_max_relief_m",
+        "auto_valley_max_slope_percent",
+        "auto_valley_max_height_m",
+        "auto_valley_max_height_percent",
         "text_boundary_percent",
         "text_height",
         "text_depth",
@@ -637,6 +715,16 @@ def _validate_setting_types(
         parser.error("--route-boundary-percent must be a finite nonnegative number or auto")
     if args.auto_boundary_max_distance_km <= 0:
         parser.error("--auto-boundary-max-distance-km must be greater than zero")
+    for name in (
+        "auto_valley_max_relief_m",
+        "auto_valley_max_slope_percent",
+        "auto_valley_max_height_m",
+        "auto_valley_max_height_percent",
+    ):
+        if getattr(args, name) < 0:
+            parser.error(f"--{name.replace('_', '-')} must be greater than or equal to zero")
+    if args.auto_valley_max_height_percent > 100:
+        parser.error("--auto-valley-max-height-percent must be less than or equal to 100")
     if args.route_width <= 0 or args.route_height <= 0:
         parser.error("route dimensions must be greater than zero")
     if args.text_height <= 0:

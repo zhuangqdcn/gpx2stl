@@ -13,7 +13,8 @@ from rasterio.transform import from_bounds
 from shapely.geometry import LineString, Polygon, box
 
 import gpx2stl.pipeline as pipeline
-from gpx2stl.auto_boundary import AutoBoundaryResult
+from gpx2stl.auto_boundary import AutoBoundaryResult, DirectionalBoundary, ValleyCriteria
+from gpx2stl.directions import DIRECTIONS
 from gpx2stl.custom_base import _fit_transform, prepare_custom_base
 from gpx2stl.dem import DemSource, DemTile
 from gpx2stl.errors import Gpx2StlError
@@ -62,8 +63,9 @@ def _mock_conversion(monkeypatch, result, route=None, final_dem=None):
     ),))
     monkeypatch.setattr(pipeline, "project_paths", lambda _: route)
 
-    def discover(actual_route, cap, load_dem, progress):
+    def discover(actual_route, cap, load_dem, progress, *, valley_criteria):
         calls["discover"].append((actual_route, cap))
+        calls["valley_criteria"] = valley_criteria
         if final_dem is not None:
             load_dem((SimpleNamespace(south=0, north=1, west=0, east=1),))
         return result
@@ -82,6 +84,21 @@ def _mock_conversion(monkeypatch, result, route=None, final_dem=None):
     monkeypatch.setattr(pipeline, "build_geometry", build)
     monkeypatch.setattr(pipeline, "export_geometry", lambda *args: calls["export"].append(args))
     return calls
+
+
+def test_pipeline_passes_configured_valley_criteria(monkeypatch):
+    result = AutoBoundaryResult(box(-1000, -1000, 1000, 1000), _dem(), 1, 4000)
+    calls = _mock_conversion(monkeypatch, result)
+    config = Config(
+        Path("activity.gpx"), Path("model.3mf"),
+        auto_valley_max_relief_m=30,
+        auto_valley_max_slope_percent=3,
+        auto_valley_max_height_m=150,
+        auto_valley_max_height_percent=15,
+    )
+    pipeline.convert(config, lambda _: None)
+    assert calls["valley_criteria"] == ValleyCriteria(30, 3, 150, 15)
+    assert calls["export"]
 
 
 @pytest.mark.parametrize("shape", ["square", "circle", "hex"])
@@ -115,7 +132,75 @@ def test_auto_fits_entire_envelope_preserving_shape_and_text(
     padding = next(message for message in messages if "geographic clearances" in message)
     for side in ("west", "east", "south", "north"):
         assert side in padding
+    for direction in DIRECTIONS:
+        assert f"{direction.name} (" in padding
     assert "%" in padding
+
+
+@pytest.mark.parametrize("fallback_count", [0, 1, 4, 8])
+def test_pipeline_reports_directional_detection_and_fallback_summary(
+    monkeypatch: pytest.MonkeyPatch, fallback_count: int,
+) -> None:
+    route = _route()
+    envelope = Polygon(
+        [(-400, -100), (-100, -400), (100, -400), (400, -100),
+         (400, 100), (100, 400), (-100, 400), (-400, 100)]
+    )
+    boundaries = []
+    for index, direction in enumerate(DIRECTIONS):
+        vector = np.asarray(direction.vector)
+        projected_route = route.points @ vector
+        limit = float(np.max(np.asarray(envelope.exterior.coords) @ vector))
+        boundaries.append(DirectionalBoundary(
+            direction=direction.name,
+            resolved=index >= fallback_count,
+            reason="stable valley boundary" if index >= fallback_count else "search edge",
+            support_limit=limit,
+            padding_m=limit - float(projected_route.max()),
+            span_m=float(np.ptp(projected_route)),
+        ))
+    result = AutoBoundaryResult(
+        envelope, _dem(), 0 if fallback_count == 8 else 2, 4000,
+        directions=tuple(boundaries),
+    )
+    calls = _mock_conversion(monkeypatch, result, route=route)
+    messages: list[str] = []
+    pipeline.convert(Config(Path("activity.gpx"), Path("model.3mf")), messages.append)
+    assert calls["export"]
+    if fallback_count == 8:
+        assert any("fallback in all 8 directions" in message for message in messages)
+        assert not any("Detected 0 mountain" in message for message in messages)
+    elif fallback_count:
+        assert any(
+            f"fallback in {fallback_count} of 8 directions" in message
+            for message in messages
+        )
+    else:
+        assert any("Detected 2 mountain regions" in message for message in messages)
+    _, footprint, transform, config, _, custom = calls["build"][0]
+    polygon_points = np.asarray(envelope.exterior.coords)
+    expected = create_footprint(
+        np.vstack((polygon_points, route.points)), config.shape, 0,
+        config.route_width / config.terrain_size,
+    )
+    expected = add_route_clearance(expected, config.route_width, config.terrain_size)
+    assert footprint.radius == pytest.approx(expected.radius)
+    pipeline._validate_auto_fit(envelope, route, footprint, transform, custom, config.route_width)
+
+
+def test_effective_clearances_match_eight_projected_supports() -> None:
+    route = _route()
+    perimeter = np.array([(-300, -200), (900, -200), (900, 500), (-300, 500)])
+    messages: list[str] = []
+    pipeline._report_auto_clearances(perimeter, route, messages.append)
+    assert len(messages) == 1
+    for direction in DIRECTIONS:
+        vector = np.asarray(direction.vector)
+        projection = route.points @ vector
+        distance = float(np.max(perimeter @ vector) - np.max(projection))
+        percentage = distance / np.ptp(projection) * 100
+        assert f"{distance:.1f} m ({percentage:.1f}%)" in messages[0]
+        assert f"{direction.name} (" in messages[0]
 
 
 def test_dense_custom_route_uses_precomputed_terrain_clearance(
@@ -253,7 +338,10 @@ def test_numeric_pipeline_geometry_is_unchanged(monkeypatch, shape) -> None:
 ])
 def test_custom_auto_fits_full_polygon_and_complete_ribbon(terrain) -> None:
     route = _route([(-100, 0), (100, 0), (1000, 200)])
-    envelope = box(-200, -500, 1400, 900)
+    envelope = Polygon(
+        [(-200, -200), (100, -500), (1100, -500), (1400, -200),
+         (1400, 600), (1100, 900), (100, 900), (-200, 600)]
+    )
     transform = _fit_transform(route, terrain, 1.0, 0.0, envelope)
     assert terrain.covers(shapely.transform(envelope, transform.to_model))
     ribbon = LineString(transform.to_model(route.points)).buffer(0.5, quad_segs=32)
@@ -336,7 +424,11 @@ def test_custom_auto_resolves_dem_for_actual_inset_perimeter(monkeypatch, tmp_pa
 def test_auto_real_mesh_stays_watertight_and_has_expected_model_size(monkeypatch, shape) -> None:
     from gpx2stl.mesh import build_geometry
 
-    result = AutoBoundaryResult(box(-200, -100, 1400, 700), _dem(), 1, 2000)
+    envelope = Polygon(
+        [(-200, 0), (-100, -100), (1300, -100), (1400, 0),
+         (1400, 600), (1300, 700), (-100, 700), (-200, 600)]
+    )
+    result = AutoBoundaryResult(envelope, _dem(), 1, 2000)
     calls = _mock_conversion(monkeypatch, result)
     built = []
 

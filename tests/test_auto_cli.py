@@ -9,6 +9,14 @@ from gpx2stl.cli import config_from_args, configs_from_args, create_parser, load
 from gpx2stl.models import Config
 
 
+VALLEY_DEFAULTS = {
+    "auto_valley_max_relief_m": 1.0,
+    "auto_valley_max_slope_percent": 0.2,
+    "auto_valley_max_height_m": 20.0,
+    "auto_valley_max_height_percent": 3.0,
+}
+
+
 @pytest.mark.parametrize("topo", [True, False])
 def test_omitted_boundary_default_depends_on_topography(simple_gpx: Path, topo: bool) -> None:
     parser = create_parser()
@@ -20,6 +28,9 @@ def test_omitted_boundary_default_depends_on_topography(simple_gpx: Path, topo: 
     assert config.auto_boundary_max_distance_km == 20.0
     programmatic = Config(gpx_file=simple_gpx, output=config.output, topo=topo)
     assert programmatic.resolved_route_boundary_percent == ("auto" if topo else 10.0)
+    for name, default in VALLEY_DEFAULTS.items():
+        assert getattr(config, name) == default
+        assert getattr(programmatic, name) == default
 
 
 def test_explicit_auto_cli_preserves_independent_text_boundary(simple_gpx: Path) -> None:
@@ -134,8 +145,126 @@ def test_auto_settings_apply_to_batch_activity_inputs(
     activity = request.getfixturevalue(activity_fixture)
     second = tmp_path / ("second" + activity.suffix)
     second.write_bytes(activity.read_bytes())
-    parser = create_parser({"route_boundary_percent": "auto", "auto_boundary_max_distance_km": 10})
-    configs = configs_from_args(parser.parse_args([str(tmp_path)]), parser)
+    thresholds = {name: value * 2 for name, value in VALLEY_DEFAULTS.items()}
+    parser = create_parser({
+        "route_boundary_percent": "auto",
+        "auto_boundary_max_distance_km": 10,
+        **thresholds,
+    })
+    configs = configs_from_args(
+        parser.parse_args([str(tmp_path), "--auto-valley-max-relief-m", "4"]),
+        parser,
+    )
     assert len(configs) == 2
     assert all(config.resolved_route_boundary_percent == "auto" for config in configs)
     assert all(config.auto_boundary_max_distance_km == 10 for config in configs)
+    thresholds["auto_valley_max_relief_m"] = 4.0
+    for name, value in thresholds.items():
+        assert all(getattr(config, name) == value for config in configs)
+
+
+@pytest.mark.parametrize("name", VALLEY_DEFAULTS)
+@pytest.mark.parametrize("value", [0, 0.5, 100])
+def test_valley_thresholds_accept_numeric_json(
+    simple_gpx: Path, tmp_path: Path, name: str, value: float,
+) -> None:
+    path = tmp_path / "valley-settings.json"
+    path.write_text(json.dumps({name: value}), encoding="utf-8")
+    parser = create_parser(load_settings(path))
+    config = config_from_args(parser.parse_args([str(simple_gpx)]), parser)
+    assert getattr(config, name) == value
+
+
+@pytest.mark.parametrize("name", VALLEY_DEFAULTS)
+@pytest.mark.parametrize("value", ["0", "0.5", "100"])
+def test_valley_thresholds_cli_override_json(
+    simple_gpx: Path, tmp_path: Path, name: str, value: str,
+) -> None:
+    path = tmp_path / "valley-settings.json"
+    path.write_text(json.dumps({name: 2}), encoding="utf-8")
+    parser = create_parser(load_settings(path))
+    config = config_from_args(
+        parser.parse_args([str(simple_gpx), "--" + name.replace("_", "-"), value]),
+        parser,
+    )
+    assert getattr(config, name) == float(value)
+
+
+@pytest.mark.parametrize("name", VALLEY_DEFAULTS)
+@pytest.mark.parametrize("value", ["-1", "nan", "inf", "-inf", "true", "auto"])
+def test_valley_thresholds_reject_invalid_cli(
+    simple_gpx: Path, name: str, value: str,
+) -> None:
+    parser = create_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args([str(simple_gpx), f"--{name.replace('_', '-')}={value}"])
+
+
+@pytest.mark.parametrize("name", VALLEY_DEFAULTS)
+@pytest.mark.parametrize(
+    "value",
+    [-1, float("nan"), float("inf"), -float("inf"), True, False, None, [], {}, "bad", "1"],
+)
+def test_valley_thresholds_reject_invalid_json(
+    simple_gpx: Path, tmp_path: Path, name: str, value: object,
+) -> None:
+    path = tmp_path / "invalid-valley-settings.json"
+    path.write_text(json.dumps({name: value}), encoding="utf-8")
+    parser = create_parser(load_settings(path))
+    with pytest.raises(SystemExit):
+        config_from_args(parser.parse_args([str(simple_gpx)]), parser)
+
+
+@pytest.mark.parametrize("value", [100.01, 101, 1000])
+@pytest.mark.parametrize("source", ["cli", "json"])
+def test_valley_height_percentage_cannot_exceed_100(
+    simple_gpx: Path, tmp_path: Path, value: float, source: str,
+) -> None:
+    settings = tmp_path / "height-settings.json"
+    settings.write_text(
+        json.dumps({"auto_valley_max_height_percent": value}), encoding="utf-8",
+    )
+    parser = create_parser(load_settings(settings) if source == "json" else {})
+    arguments = [str(simple_gpx)]
+    if source == "cli":
+        arguments.extend(["--auto-valley-max-height-percent", str(value)])
+    with pytest.raises(SystemExit):
+        config_from_args(parser.parse_args(arguments), parser)
+
+
+@pytest.mark.parametrize("source", ["cli", "json"])
+def test_valley_slope_percentage_can_exceed_100(
+    simple_gpx: Path, source: str,
+) -> None:
+    parser = create_parser({"auto_valley_max_slope_percent": 125} if source == "json" else {})
+    arguments = [str(simple_gpx)]
+    if source == "cli":
+        arguments.extend(["--auto-valley-max-slope-percent", "125"])
+    config = config_from_args(parser.parse_args(arguments), parser)
+    assert config.auto_valley_max_slope_percent == 125
+
+
+@pytest.mark.parametrize("topo", [True, False])
+def test_explicit_valley_controls_do_not_gate_numeric_boundary(
+    simple_gpx: Path, topo: bool,
+) -> None:
+    parser = create_parser({name: 0 for name in VALLEY_DEFAULTS})
+    config = config_from_args(
+        parser.parse_args([
+            str(simple_gpx), "--route-boundary-percent", "10",
+            "--topo" if topo else "--no-topo",
+        ]),
+        parser,
+    )
+    assert config.resolved_route_boundary_percent == 10
+    assert all(getattr(config, name) == 0 for name in VALLEY_DEFAULTS)
+
+
+@pytest.mark.parametrize("name", VALLEY_DEFAULTS)
+def test_valley_cli_can_override_invalid_json_type(simple_gpx: Path, name: str) -> None:
+    parser = create_parser({name: "1"})
+    config = config_from_args(
+        parser.parse_args([str(simple_gpx), "--" + name.replace("_", "-"), "2"]),
+        parser,
+    )
+    assert getattr(config, name) == 2
