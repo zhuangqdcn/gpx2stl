@@ -209,7 +209,7 @@ def test_retired_programmatic_settings_are_rejected(retired: str) -> None:
 def test_config_exposes_only_split_boundary_fields(simple_gpx: Path, topo: bool) -> None:
     config = Config(gpx_file=simple_gpx, output=simple_gpx.with_suffix(".3mf"), topo=topo)
     assert config.route_boundary_percent is None
-    assert config.resolved_route_boundary_percent == ("auto" if topo else 10.0)
+    assert config.resolved_route_boundary_percent == ("search" if topo else 10.0)
     assert config.auto_boundary_max_distance_km == 10.0
     assert config.text_boundary_percent == 7.0
     names = {field.name for field in fields(Config)}

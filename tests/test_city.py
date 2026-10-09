@@ -11,6 +11,7 @@ from shapely.geometry import LineString, MultiLineString, box
 from shapely.ops import unary_union
 
 from gpx2stl.city import (
+    CITY_REQUEST_INTERVAL_SECONDS,
     OVERPASS_TILE_DEGREES,
     GeographicBridge,
     GeographicCityData,
@@ -113,13 +114,21 @@ def test_geographic_tiles_are_fixed_deterministic_and_antimeridian_safe() -> Non
     )
 
 
-def test_city_cache_rejects_excessive_public_query_fanout(tmp_path: Path) -> None:
-    with pytest.raises(Gpx2StlError, match="safe public Overpass limit"):
-        load_raw_tiles(
-            GeographicBounds(0.0, 0.2, 0.0, 0.2),
-            tmp_path,
-            session=_Session([]),
-        )
+def test_city_tiles_remain_fixed_for_broad_marathon_footprint() -> None:
+    bounds = GeographicBounds(
+        49.20562,
+        49.33461,
+        -123.29883,
+        -123.07126,
+    )
+
+    tiles = geographic_tiles(bounds)
+
+    assert len(tiles) == 322
+    assert all(
+        tile.north - tile.south == pytest.approx(OVERPASS_TILE_DEGREES)
+        for tile in tiles
+    )
 
 
 def test_nonempty_cached_tile_is_reused_without_network(tmp_path: Path) -> None:
@@ -162,6 +171,24 @@ def test_only_missing_or_empty_tiles_are_fetched_and_atomically_cached(
     assert "out skel qt" in str(session.calls[0]["params"])
     assert (tmp_path / f"{tiles[1].cache_key}.json").read_bytes() == second_content
     assert not tuple(tmp_path.glob("*.partial"))
+
+
+def test_uncached_tile_requests_are_paced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bounds = GeographicBounds(
+        0.001, 0.002, 0.001, OVERPASS_TILE_DEGREES + 0.002
+    )
+    body = json.dumps(_document()).encode()
+    session = _Session([_Response(body), _Response(body)])
+    sleeps: list[float] = []
+    monkeypatch.setattr("gpx2stl.city.requests.Session", lambda: session)
+    monkeypatch.setattr("gpx2stl.city.time.monotonic", lambda: 0.0)
+    monkeypatch.setattr("gpx2stl.city.time.sleep", sleeps.append)
+
+    load_raw_tiles(bounds, tmp_path)
+
+    assert sleeps == [CITY_REQUEST_INTERVAL_SECONDS]
 
 
 def test_fetch_failure_and_invalid_json_are_explicit_and_not_cached(

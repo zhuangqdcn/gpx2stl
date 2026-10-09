@@ -27,7 +27,7 @@ def test_omitted_boundary_default_depends_on_topography(simple_gpx: Path, topo: 
     assert args.route_boundary_percent is None
     assert args.auto_boundary_max_distance_km == config.auto_boundary_max_distance_km == 10.0
     programmatic = Config(gpx_file=simple_gpx, output=config.output, topo=topo)
-    assert programmatic.resolved_route_boundary_percent == ("auto" if topo else 10.0)
+    assert programmatic.resolved_route_boundary_percent == ("search" if topo else 10.0)
     assert programmatic.auto_boundary_max_distance_km == 10.0
     assert args.text_boundary_percent == config.text_boundary_percent == 7.0
     assert programmatic.text_boundary_percent == 7.0
@@ -52,27 +52,89 @@ def test_explicit_auto_cli_preserves_independent_text_boundary(simple_gpx: Path)
         ),
         parser,
     )
-    assert config.resolved_route_boundary_percent == "auto"
+    assert config.route_boundary_percent == "auto"
+    assert config.resolved_route_boundary_percent == "search"
     assert config.text_boundary_percent == 20.0
     assert config.auto_boundary_max_distance_km == 12.5
 
 
-def test_city_mode_can_explicitly_select_auto_boundary(simple_gpx: Path) -> None:
+@pytest.mark.parametrize("custom_base", [False, True])
+def test_city_mode_auto_resolves_to_symmetric_five_percent(
+    simple_gpx: Path, tmp_path: Path, custom_base: bool,
+) -> None:
+    base = tmp_path / "base.stl"
+    if custom_base:
+        base.touch()
+    parser = create_parser()
+    arguments = [
+        str(simple_gpx),
+        "--mode",
+        "city",
+        "--route-boundary-percent",
+        "auto",
+    ]
+    if custom_base:
+        arguments.extend(["--base-stl", str(base)])
+    config = config_from_args(
+        parser.parse_args(arguments),
+        parser,
+    )
+
+    assert config.route_boundary_percent == "auto"
+    assert config.resolved_route_boundary_percent == 5.0
+
+
+@pytest.mark.parametrize("mode", ["topo", "city"])
+def test_search_forces_boundary_discovery_keyword(
+    simple_gpx: Path, mode: str,
+) -> None:
     parser = create_parser()
     config = config_from_args(
         parser.parse_args(
             [
                 str(simple_gpx),
                 "--mode",
-                "city",
+                mode,
                 "--route-boundary-percent",
-                "auto",
+                "search",
             ]
         ),
         parser,
     )
 
-    assert config.resolved_route_boundary_percent == "auto"
+    assert config.route_boundary_percent == "search"
+    assert config.resolved_route_boundary_percent == "search"
+
+
+def test_city_auto_from_settings_resolves_to_five_percent(
+    simple_gpx: Path,
+) -> None:
+    parser = create_parser(
+        {"mode": "city", "route_boundary_percent": "auto"}
+    )
+
+    config = config_from_args(parser.parse_args([str(simple_gpx)]), parser)
+
+    assert config.route_boundary_percent == "auto"
+    assert config.resolved_route_boundary_percent == 5.0
+
+
+@pytest.mark.parametrize("mode", [None, 1, "City"])
+def test_invalid_settings_mode_precedes_boundary_validation(
+    simple_gpx: Path, mode: object, capsys: pytest.CaptureFixture[str],
+) -> None:
+    parser = create_parser(
+        {
+            "mode": mode,
+            "topo": False,
+            "route_boundary_percent": "auto",
+        }
+    )
+
+    with pytest.raises(SystemExit):
+        config_from_args(parser.parse_args([str(simple_gpx)]), parser)
+
+    assert "settings file value 'mode'" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("topo", [True, False])
@@ -109,7 +171,15 @@ def test_help_reports_requested_defaults():
 
 @pytest.mark.parametrize(
     ("setting", "override", "expected"),
-    [("auto", "15", 15.0), (10, "auto", "auto"), ("auto", None, "auto"), (0, None, 0.0)],
+    [
+        ("auto", "15", 15.0),
+        (10, "auto", "search"),
+        ("auto", None, "search"),
+        ("auto", "search", "search"),
+        ("search", None, "search"),
+        ("search", "auto", "search"),
+        (0, None, 0.0),
+    ],
 )
 def test_auto_and_numeric_settings_cli_precedence(
     simple_gpx: Path, tmp_path: Path, setting: str | float,
@@ -151,14 +221,17 @@ def test_directional_settings_array_and_cli_precedence(
     assert overridden.route_boundary_percent == (5.0, 6.0, 7.0, 8.0)
 
 
-@pytest.mark.parametrize("settings", [{}, {"route_boundary_percent": "auto"}])
-def test_explicit_auto_without_topography_is_rejected(
-    simple_gpx: Path, settings: dict, capsys: pytest.CaptureFixture[str],
+@pytest.mark.parametrize("keyword", ["auto", "search"])
+@pytest.mark.parametrize("source", ["cli", "settings"])
+def test_searching_boundary_without_topography_is_rejected(
+    simple_gpx: Path, keyword: str, source: str,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
+    settings = {"route_boundary_percent": keyword} if source == "settings" else {}
     parser = create_parser(settings)
     arguments = [str(simple_gpx), "--no-topo"]
-    if not settings:
-        arguments.extend(["--route-boundary-percent", "auto"])
+    if source == "cli":
+        arguments.extend(["--route-boundary-percent", keyword])
     with pytest.raises(SystemExit):
         config_from_args(parser.parse_args(arguments), parser)
     assert "requires topography" in capsys.readouterr().err
@@ -178,6 +251,7 @@ def test_numeric_override_allows_flat_model_with_auto_settings(simple_gpx: Path)
     [
         "AUTO",
         "automatic",
+        "SEARCH",
         "-1",
         "nan",
         "inf",
@@ -269,7 +343,7 @@ def test_auto_settings_apply_to_batch_activity_inputs(
         parser,
     )
     assert len(configs) == 2
-    assert all(config.resolved_route_boundary_percent == "auto" for config in configs)
+    assert all(config.resolved_route_boundary_percent == "search" for config in configs)
     assert all(config.auto_boundary_max_distance_km == 10 for config in configs)
     thresholds["auto_valley_max_relief_m"] = 4.0
     for name, value in thresholds.items():

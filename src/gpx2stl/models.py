@@ -16,7 +16,10 @@ FontStyle = Literal["normal", "italic"]
 TextAlign = Literal["left", "center", "right"]
 TextMode = Literal["raised", "embedded"]
 DirectionalRouteBoundary = tuple[float, float, float, float]
-RouteBoundaryPercent = float | DirectionalRouteBoundary | Literal["auto"]
+RouteBoundaryPercent = (
+    float | DirectionalRouteBoundary | Literal["auto", "search"]
+)
+ResolvedRouteBoundary = float | DirectionalRouteBoundary | Literal["search"]
 
 
 @dataclass(frozen=True)
@@ -66,16 +69,19 @@ class Config:
     force: bool = False
 
     @property
-    def resolved_route_boundary_percent(self) -> RouteBoundaryPercent:
-        if self.route_boundary_percent is None:
+    def resolved_route_boundary_percent(self) -> ResolvedRouteBoundary:
+        boundary = self.route_boundary_percent
+        if boundary is None:
             if self.mode == "city":
                 return (
                     10.0
                     if self.base_stl is not None
                     else (10.0, 10.0, 10.0, 10.0)
                 )
-            return "auto" if self.topo else 10.0
-        return self.route_boundary_percent
+            boundary = "auto" if self.topo else 10.0
+        if boundary == "auto":
+            return 5.0 if self.mode == "city" else "search"
+        return boundary
 
     @property
     def terrain_size(self) -> float:

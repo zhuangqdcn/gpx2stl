@@ -37,7 +37,7 @@ OVERPASS_URLS = (
 )
 OVERPASS_TILE_DEGREES = 0.01
 OVERPASS_TIMEOUT_SECONDS = 120.0
-MAX_OVERPASS_TILES = 200
+CITY_REQUEST_INTERVAL_SECONDS = 2.0
 OSM_CACHE_VERSION = 3
 
 Polygonal: TypeAlias = Polygon | MultiPolygon
@@ -231,12 +231,6 @@ def load_raw_tiles(
     """Load cached Overpass documents, fetching only absent or empty tile files."""
 
     tiles = geographic_tiles(bounds)
-    if len(tiles) > MAX_OVERPASS_TILES:
-        raise Gpx2StlError(
-            f"City footprint requires {len(tiles)} OpenStreetMap tiles, exceeding "
-            f"the safe public Overpass limit of {MAX_OVERPASS_TILES}; use a smaller "
-            "numeric --route-boundary-percent or a shorter activity."
-        )
     try:
         cache_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
@@ -265,7 +259,9 @@ def load_raw_tiles(
             if progress is not None:
                 progress(f"Downloading city data tile {index}/{len(tiles)}")
             if owns_client and last_request_at is not None:
-                delay = 1.0 - (time.monotonic() - last_request_at)
+                delay = CITY_REQUEST_INTERVAL_SECONDS - (
+                    time.monotonic() - last_request_at
+                )
                 if delay > 0.0:
                     time.sleep(delay)
             if map_fallback_active:

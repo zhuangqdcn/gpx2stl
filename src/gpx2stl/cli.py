@@ -141,12 +141,14 @@ def _nonnegative(value: str) -> float:
 def _route_boundary_percentage(value: str) -> RouteBoundaryPercent:
     if value == "auto":
         return "auto"
+    if value == "search":
+        return "search"
     if "," in value:
         parts = value.split(",")
         if len(parts) != 4 or any(not part.strip() for part in parts):
             raise argparse.ArgumentTypeError(
-                "must be 'auto', one nonnegative number, or four comma-separated "
-                "N,E,S,W percentages"
+                "must be 'auto', 'search', one nonnegative number, or four "
+                "comma-separated N,E,S,W percentages"
             )
         parsed = [_nonnegative(part.strip()) for part in parts]
         return parsed[0], parsed[1], parsed[2], parsed[3]
@@ -330,8 +332,9 @@ def create_parser(settings: dict[str, Any] | None = None) -> argparse.ArgumentPa
         type=_route_boundary_percentage,
         default=None,
         help="one route padding percent, N,E,S,W comma-separated percentages, "
-        "or auto mountain extent (default: 10,10,10,10 in city mode; "
-        "auto with topo; 10 without topo)",
+        "auto (5 in city mode, terrain search otherwise), or search to force "
+        "terrain discovery (default: 10,10,10,10 in city mode; auto with topo; "
+        "10 without topo)",
     )
     parser.add_argument(
         "--auto-boundary-max-distance-km",
@@ -806,12 +809,19 @@ def configs_from_args(
 def _validate_setting_types(
     args: argparse.Namespace, parser: argparse.ArgumentParser
 ) -> None:
+    if not isinstance(args.mode, str):
+        parser.error("settings file value 'mode' must be a string")
+    if args.mode not in {"topo", "city"}:
+        parser.error("settings file value 'mode' must be 'topo' or 'city'")
     if args._route_boundary_explicit and not args._route_boundary_cli_explicit:
         configured_boundary = args._route_boundary_setting_value
-        if isinstance(configured_boundary, str) and configured_boundary != "auto":
+        if (
+            isinstance(configured_boundary, str)
+            and configured_boundary not in {"auto", "search"}
+        ):
             parser.error(
                 "settings file value 'route_boundary_percent' must use a JSON "
-                "number, a four-number N,E,S,W array, or 'auto'"
+                "number, a four-number N,E,S,W array, 'auto', or 'search'"
             )
     for name, value in args._valley_threshold_settings.items():
         if name not in args._valley_threshold_overrides and (
@@ -863,11 +873,15 @@ def _validate_setting_types(
         if args._route_boundary_explicit:
             parser.error(
                 "settings file value 'route_boundary_percent' must be a number, "
-                "a four-number N,E,S,W array, or 'auto'"
+                "a four-number N,E,S,W array, 'auto', or 'search'"
             )
-    elif boundary == "auto":
-        if not args.topo:
-            parser.error("--route-boundary-percent auto requires topography; enable --topo or use a numeric percentage")
+    elif isinstance(boundary, str) and boundary in {"auto", "search"}:
+        requires_search = boundary == "search" or args.mode != "city"
+        if requires_search and not args.topo:
+            parser.error(
+                f"--route-boundary-percent {boundary} requires topography; "
+                "enable --topo or use a numeric percentage"
+            )
     elif isinstance(boundary, (list, tuple)):
         if _directional_route_boundary(boundary) is None:
             parser.error(
@@ -877,10 +891,13 @@ def _validate_setting_types(
     elif isinstance(boundary, bool) or not isinstance(boundary, (int, float)):
         parser.error(
             "settings file value 'route_boundary_percent' must be a number, "
-            "a four-number N,E,S,W array, or 'auto'"
+            "a four-number N,E,S,W array, 'auto', or 'search'"
         )
     elif not math.isfinite(boundary) or boundary < 0:
-        parser.error("--route-boundary-percent must be a finite nonnegative number or auto")
+        parser.error(
+            "--route-boundary-percent must be a finite nonnegative number, "
+            "auto, or search"
+        )
     if args.auto_boundary_max_distance_km <= 0:
         parser.error("--auto-boundary-max-distance-km must be greater than zero")
     for name in (
@@ -946,7 +963,6 @@ def _validate_setting_types(
         "text_mode",
         "font_weight",
         "font_style",
-        "mode",
     ):
         if not isinstance(getattr(args, name), str):
             parser.error(f"settings file value '{name}' must be a string")
@@ -954,8 +970,6 @@ def _validate_setting_types(
         parser.error(
             "settings file value 'shape' must be 'square', 'circle', or 'hex'"
         )
-    if args.mode not in {"topo", "city"}:
-        parser.error("settings file value 'mode' must be 'topo' or 'city'")
     if args.text_align not in {"left", "center", "right"}:
         parser.error(
             "settings file value 'text_align' must be 'left', 'center', or 'right'"

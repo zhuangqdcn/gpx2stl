@@ -74,7 +74,7 @@ def _mock_conversion(monkeypatch, result, route=None, final_dem=None):
         calls["resolve"].append(bounds)
         return final_dem or result.dem
 
-    def build(*args):
+    def build(*args, **kwargs):
         calls["build"].append(args)
         mesh = trimesh.creation.box()
         return SimpleNamespace(base=mesh, topography=None, route=mesh, text=None)
@@ -287,11 +287,83 @@ def test_auto_perimeter_nodata_does_not_reuse_discovery_dem(monkeypatch) -> None
 
 def test_auto_no_topography_is_programmatic_error(monkeypatch) -> None:
     monkeypatch.setattr(pipeline, "read_activity", lambda _: pytest.fail("Must fail first"))
-    with pytest.raises(Gpx2StlError, match="require topography"):
+    with pytest.raises(Gpx2StlError, match="requires topography"):
         pipeline.convert(Config(
             Path("activity.gpx"), Path("model.3mf"), topo=False,
             route_boundary_percent="auto",
         ), lambda _: None)
+
+
+def test_city_no_topography_is_programmatic_error(monkeypatch) -> None:
+    monkeypatch.setattr(pipeline, "read_activity", lambda _: pytest.fail("Must fail first"))
+    with pytest.raises(Gpx2StlError, match="City mode requires topography"):
+        pipeline.convert(
+            Config(
+                Path("activity.gpx"),
+                Path("model.3mf"),
+                mode="city",
+                topo=False,
+                route_boundary_percent="auto",
+            ),
+            lambda _: None,
+        )
+
+
+def test_city_auto_uses_five_percent_without_discovery(monkeypatch) -> None:
+    route = _route()
+    result = AutoBoundaryResult(box(-200, -100, 1400, 700), _dem(), 1, 2000)
+    calls = _mock_conversion(monkeypatch, result, route)
+    monkeypatch.setattr(
+        pipeline,
+        "load_city_data",
+        lambda *args, **kwargs: pipeline.CityData((), ()),
+    )
+    config = Config(
+        Path("activity.gpx"),
+        Path("model.3mf"),
+        mode="city",
+        max_size=20,
+        route_boundary_percent="auto",
+    )
+
+    pipeline.convert(config, lambda _: None)
+
+    assert calls["discover"] == []
+    expected = add_route_clearance(
+        create_footprint(
+            route.points,
+            config.shape,
+            5.0,
+            config.route_width / config.terrain_size,
+        ),
+        config.route_width,
+        config.terrain_size,
+    )
+    footprint = calls["build"][0][1]
+    assert footprint.center == pytest.approx(expected.center)
+    assert footprint.radius == pytest.approx(expected.radius)
+
+
+def test_city_search_forces_discovery(monkeypatch) -> None:
+    result = AutoBoundaryResult(box(-200, -100, 1400, 700), _dem(), 1, 2000)
+    calls = _mock_conversion(monkeypatch, result)
+    monkeypatch.setattr(
+        pipeline,
+        "load_city_data",
+        lambda *args, **kwargs: pipeline.CityData((), ()),
+    )
+
+    pipeline.convert(
+        Config(
+            Path("activity.gpx"),
+            Path("model.3mf"),
+            mode="city",
+            route_boundary_percent="search",
+        ),
+        lambda _: None,
+    )
+
+    assert len(calls["discover"]) == 1
 
 
 def test_auto_clearance_zero_span_is_explicit(monkeypatch) -> None:

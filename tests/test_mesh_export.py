@@ -10,7 +10,7 @@ import pytest
 import trimesh
 from matplotlib.textpath import TextToPath
 from matplotlib.textpath import TextPath
-from shapely.geometry import Polygon
+from shapely.geometry import Polygon, box
 
 from gpx2stl.errors import Gpx2StlError
 from gpx2stl.export import export_geometry
@@ -20,7 +20,12 @@ from gpx2stl.footprint import (
     create_model_transform,
 )
 from gpx2stl.gpx import interpolate_elevations, project_paths, read_gpx
-from gpx2stl.mesh import _font_properties, _generated_text_layout, build_geometry
+from gpx2stl.mesh import (
+    _font_properties,
+    _generated_text_layout,
+    _variable_extrusion,
+    build_geometry,
+)
 from gpx2stl.models import Config, Shape
 
 
@@ -44,6 +49,21 @@ def _geometry(simple_gpx: Path, output: Path, use_3mf: bool):
         route_width=1.0,
     )
     return build_geometry(route, footprint, transform, config, None), config
+
+
+def test_variable_extrusion_normalizes_microscopic_boundary_clearance() -> None:
+    polygon = box(0.0, 0.0, 10.0, 10.0).difference(
+        box(2.0, 1e-10, 8.0, 8.0)
+    )
+
+    mesh = _variable_extrusion(
+        polygon,
+        lambda points: np.zeros(len(points)),
+        lambda points: np.ones(len(points)),
+    )
+
+    assert mesh.is_volume
+    assert mesh.volume == pytest.approx(polygon.area, abs=1e-6)
 
 
 def test_no_topo_geometry_is_watertight(simple_gpx: Path, tmp_path: Path) -> None:

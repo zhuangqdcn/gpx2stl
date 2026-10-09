@@ -34,7 +34,7 @@ def test_cli_defaults(simple_gpx: Path, monkeypatch: pytest.MonkeyPatch) -> None
     assert config.route_depth == 0.6
     assert config.road_snap_distance == 5.0
     assert config.route_boundary_percent == "auto"
-    assert config.resolved_route_boundary_percent == "auto"
+    assert config.resolved_route_boundary_percent == "search"
     assert config.auto_boundary_max_distance_km == 10.0
     assert config.shape == "square"
     assert config.text is None

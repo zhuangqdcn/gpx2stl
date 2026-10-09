@@ -57,7 +57,7 @@ cp settings.example.json /path/to/activities/.gpx2stl.settings.json
 
 JSON keys use the Python/long-option names with underscores, such as `mode`, `route_width`, `route_depth`, `road_snap_distance`, `route_boundary_percent`, `text_mode`, `topo_source`, `topo_dir`, `city_dir`, `building_default_height`, and `building_height_scale`. The positional `.gpx`/`.fit` file-or-directory input can also be defaulted with the backward-compatible `gpx_file` key. Use `use_3mf` for the `--3mf` / `--no-3mf` setting. Relative `font_file`, terrain, and city-cache paths are resolved from the settings file. Unknown keys, invalid JSON, or incorrect value types produce an explicit error. `.gpx2stl.settings.json` is ignored by Git; `settings.example.json` is tracked as a complete template.
 
-Directional route padding uses a JSON array in north, east, south, west order, for example `"route_boundary_percent": [10, 15, 10, 15]`. A scalar number retains symmetric padding, and `"auto"` retains DEM-based mountain discovery.
+Directional route padding uses a JSON array in north, east, south, west order, for example `"route_boundary_percent": [10, 15, 10, 15]`. A scalar number retains symmetric padding. `"auto"` resolves to symmetric 5% padding in city mode and terrain-aware search in other modes; `"search"` explicitly forces terrain-aware discovery in any mode.
 
 `--boundary-percent` / `boundary_percent` and `--inner-size-percent` / `inner_size_percent` are retired and rejected with migration guidance. For generated bases, rename the old boundary setting to `route_boundary_percent` and replace the old inner-size setting with `text_boundary_percent = (100 - inner_size_percent) / 2`. Thus an inner size of 70 becomes a text boundary of 15. For custom STL bases with text, the old boundary value controlled the text inset: move it to `text_boundary_percent` and use `route_boundary_percent: 0` to preserve the previous maximum route fit. Without text, custom terrain now uses the full top; text boundary is ignored.
 
@@ -147,7 +147,7 @@ python -m gpx2stl route.gpx --mode city --route-boundary-percent 10,20,10,20
 python -m gpx2stl route.gpx --mode city --road-snap-distance 0
 
 # Estimate all route-touched mountain extents, searching up to 30 km per side
-python -m gpx2stl route.gpx --route-boundary-percent auto --auto-boundary-max-distance-km 30
+python -m gpx2stl route.gpx --route-boundary-percent search --auto-boundary-max-distance-km 30
 
 # Four-object 3MF: base, circular topography, raised text, and route
 python -m gpx2stl route.gpx --shape hex --text "MOUNT RAINIER"
@@ -199,8 +199,8 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 | `--route-depth` | city: `1.5` mm; otherwise: `0.6` mm | Flush route inlay/cavity depth in city mode; must be smaller than the base height. |
 | `--road-snap-distance` | `5` m | Maximum source-meter distance for conservative OSM road matching in city mode. Set to `0` to preserve the original activity geometry. |
 | `--topo`, `--no-topo` | topo | Enable or disable terrain. |
-| `--route-boundary-percent` | city generated base: `10,10,10,10`; city custom base: `10`; topo: `auto`; no topo: `10` | One finite nonnegative symmetric percentage, four comma-separated `N,E,S,W` percentages, or `auto` for DEM-based mountain discovery. Settings use a four-number JSON array. Explicit `auto` requires topo; directional values require a generated base. |
-| `--auto-boundary-max-distance-km` | `10` km | Finite positive maximum discovery distance beyond each side of the route bounding box in automatic mode. |
+| `--route-boundary-percent` | city generated base: `10,10,10,10`; city custom base: `10`; topo: `auto`; no topo: `10` | One finite nonnegative symmetric percentage, four comma-separated `N,E,S,W` percentages, contextual `auto`, or `search`. In city mode `auto` means symmetric 5%; otherwise it means terrain-aware search. `search` always forces discovery and requires topo. Settings use a four-number JSON array. Directional values require a generated base. |
+| `--auto-boundary-max-distance-km` | `10` km | Finite positive maximum discovery distance beyond each side of the route bounding box in search mode. |
 | `--auto-valley-max-relief-m` | `1000` m | Maximum smoothed elevation variation across the approximately 900 m valley neighborhood. Increase to admit uneven valley floors. |
 | `--auto-valley-max-slope-percent` | `100` % | Maximum smoothed valley-floor slope as a percentage grade (`2` means 2%, not 200%). |
 | `--auto-valley-max-height-m` | `1000` m | Maximum height above the search window's 10th-percentile elevation floor; also limited by the relief percentage below. |
@@ -243,9 +243,10 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 - Setting `--terrain-height` explicitly overrides true-scale relief and normalizes the DEM minimum-to-maximum range to that many millimeters.
 - Without topo, GPX or FIT altitude controls the route top at physical 1:20,000 vertical scale: 1,000 m becomes 50 mm. Internal missing elevations are interpolated; missing endpoint/all elevations are errors.
 - In city mode, route points are matched only to connected OSM road geometry within `--road-snap-distance`; implausible, disconnected, or out-of-range spans retain their GPX geometry. If matching would leave the printable footprint, the original route is used. Buildings that overlap an unmatched route remain complete and hide that route section.
+- City data uses a fixed 0.01° cache grid at every footprint size. Missing tiles are downloaded sequentially with at least two seconds between requests; cached tiles do not wait or contact the service.
 - City buildings use OSM `height`, then `building:levels × 3 m`, then `--building-default-height`. Bridge-tagged ways become printable decks using OSM width, lane-derived width, or a road/rail fallback. Heights use the horizontal model scale and `--building-height-scale`; roofs and bridge decks are flat. The default `5×` vertical multiplier keeps short structures visible on city-scale models; use `1` for true scale. The route is a separate 3MF object filling a matching terrain/base cavity with its top flush to the terrain.
 - City water includes OSM lakes, ponds, reservoirs, basins, riverbanks, width-tagged or inferred rivers/streams/canals, and the sea-facing side of directed coastlines. It is clipped to the printable terrain and exported as a separate flush `Water` inlay; `--water-depth` controls its cavity depth. The route takes material priority where it crosses water.
-- In numeric boundary mode, square output is the smallest north-up square around the route before padding. Circle output uses the true minimum enclosing circle. Hex output uses the minimum translated flat-top regular hexagon. Automatic mode fits the eight-direction geographic selection polygon together with the route.
+- In numeric boundary mode, square output is the smallest north-up square around the route before padding. Circle output uses the true minimum enclosing circle. Hex output uses the minimum translated flat-top regular hexagon. Search mode fits the eight-direction geographic selection polygon together with the route.
 - Four-value padding expands the route bounding box independently: N/S percentages use its north-south span, while E/W percentages use its east-west span. The selected square, circle, or hex is then fitted around the padded rectangle. City mode defaults to `10,10,10,10`; a degenerate axis receives no percentage padding on that axis, but printable route-width clearance still applies.
 - When `--text` is present, `--max-size` controls the outer square, circle, or hex frame. The centered terrain circle has diameter `max_size × (1 - 2 × text_boundary_percent / 100)`; the rest of the frame stays flat at the base-top height. The default 7% text boundary retains an 86% terrain diameter. Hex frames need more than approximately 6.7% to leave a text band at their narrower sides; glyphs and margins may require more.
 - A numeric `--route-boundary-percent` pads the minimum route footprint before fitting it into the terrain: square side length is multiplied by `1 + 2 × route_boundary_percent / 100`, while circle/hex radius is multiplied by `1 + route_boundary_percent / 100`. Route-width clearance is added separately. Changing route boundary does not resize the text band. Without text, text boundary is ignored and the full generated footprint is available.
@@ -255,9 +256,9 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 - In STL output, raised text is unioned with the frame, route, and terrain into one watertight mesh.
 - Routes crossing the ±180° antimeridian are supported by split DEM requests.
 
-### Automatic mountain boundaries
+### Terrain-aware mountain boundary search
 
-`--route-boundary-percent auto` (JSON: `"route_boundary_percent": "auto"`) uses DEM summit/valley segmentation to estimate the mountain terrain touched by the entire route, including routes crossing multiple peaks. It analyzes progressively larger nested search windows independently in eight directions: N, NE, E, SE, S, SW, W, and NW. Reliable detected bounds require an interior valley boundary and stable directional terrain geometry between windows. Candidates can become unresolved again if later evidence changes. This is a terrain-based estimate, not a guarantee of the exact boundary of a named mountain.
+`--route-boundary-percent search` (JSON: `"route_boundary_percent": "search"`) uses DEM summit/valley segmentation to estimate the mountain terrain touched by the entire route, including routes crossing multiple peaks. In non-city modes, `auto` resolves to the same search behavior; in city mode, `auto` instead resolves to symmetric 5% padding, so use explicit `search` to force discovery there. Search requires topography. It analyzes progressively larger nested search windows independently in eight directions: N, NE, E, SE, S, SW, W, and NW. Reliable detected bounds require an interior valley boundary and stable directional terrain geometry between windows. Candidates can become unresolved again if later evidence changes. This is a terrain-based estimate, not a guarantee of the exact boundary of a named mountain.
 
 Automatic mode keeps each reliable detected directional constraint, including full analysis-cell extents and a safety margin, even when its padding exceeds 100%. After normal bounded discovery, directions still unresolved at the search cap use 100% of the route's projected span in that direction. If no usable detection exists (no valley markers, flat or ambiguous terrain, or no route-touched mountain regions), all eight directions use fallback with explicit warnings; this is not reported as complete mountain discovery.
 
@@ -288,14 +289,14 @@ All four valley thresholds are configurable in the CLI and JSON settings (replac
 For example, to experiment with more conservative conditions than the defaults, lower all four thresholds:
 
 ```bash
-python -m gpx2stl route.gpx --route-boundary-percent auto --auto-valley-max-relief-m 35 --auto-valley-max-slope-percent 3 --auto-valley-max-height-m 150 --auto-valley-max-height-percent 15
+python -m gpx2stl route.gpx --route-boundary-percent search --auto-valley-max-relief-m 35 --auto-valley-max-slope-percent 3 --auto-valley-max-height-m 150 --auto-valley-max-height-percent 15
 ```
 
 Equivalent JSON entries:
 
 ```json
 {
-  "route_boundary_percent": "auto",
+  "route_boundary_percent": "search",
   "auto_valley_max_relief_m": 35,
   "auto_valley_max_slope_percent": 3,
   "auto_valley_max_height_m": 150,
@@ -305,7 +306,7 @@ Equivalent JSON entries:
 
 These are exploratory values, not a universal preset or guaranteed solution. Discovery logs print the active thresholds. Loosening them can misclassify gentle foothills as valleys, crop mountain slopes, or change the selected regions; boundaries still need independent directional stability, and unresolved directions still use the existing 100% fallback. The floor is window-relative, not a local drainage/saddle detector: threshold tuning does not guarantee recognition of every visible valley. DEM coverage/resolution and resource checks remain strict.
 
-Omitting the route boundary selects directional `10,10,10,10` in city mode, `auto` in topo mode, and numeric `10` without topography. Explicit `auto` with `--no-topo` is an error, including when `auto` comes from settings. Override it with `--no-topo --route-boundary-percent 10`. There is no separate automatic-boundary boolean. Scalar numeric behavior and the independent text boundary are unchanged. The tracked settings template retains `"auto"` for its default topo profile; use the documented four-number JSON array for a city profile.
+Omitting the route boundary selects directional `10,10,10,10` in city mode, contextual `auto` in topo mode, and numeric `10` without topography. Explicit `auto` resolves to symmetric `5` in city mode and to `search` in other modes. Explicit `search`, and therefore non-city `auto`, requires topography; override it with a numeric percentage when using `--no-topo`. Scalar numeric behavior and the independent text boundary are unchanged. The tracked settings template retains `"auto"` for its default topo profile; the same setting in a city profile means symmetric 5% padding, while `"search"` forces discovery.
 
 ### Custom STL bases
 
@@ -319,9 +320,9 @@ With text, the terrain region follows the exact top outline after an inward offs
 offset distance = text-boundary-percent / 100 × min(top width, top height)
 ```
 
-Without text, there is no text inset and terrain uses the full top. The GPX remains north-up. In numeric mode it is centered on the usable terrain; its maximum fitting scale reserves half the route width at the edges, then is divided by `1 + route_boundary_percent / 100` to add independent route padding. In automatic mode the entire eight-direction selection polygon and route ribbon are fitted together, recentering the geography and reducing scale as necessary. Containment is checked; incompatible concave edges or holes produce an explicit error rather than clipping the selection polygon or route. Changing route boundary leaves the terrain region and text band unchanged. The custom STL itself is never resized by `--max-size`. Final DEM bounds are derived from the terrain region.
+Without text, there is no text inset and terrain uses the full top. The GPX remains north-up. In numeric mode it is centered on the usable terrain; its maximum fitting scale reserves half the route width at the edges, then is divided by `1 + route_boundary_percent / 100` to add independent route padding. In search mode the entire eight-direction selection polygon and route ribbon are fitted together, recentering the geography and reducing scale as necessary. Containment is checked; incompatible concave edges or holes produce an explicit error rather than clipping the selection polygon or route. Changing route boundary leaves the terrain region and text band unchanged. The custom STL itself is never resized by `--max-size`. Final DEM bounds are derived from the terrain region.
 
-Custom STL fitting supports city mode. OSM buildings, roads, bridges, and water are clipped to the exact inset custom top; terrain/buildings follow that surface, and the flush route and water cavities are cut into the custom base. Route and water depths must be smaller than the custom base thickness. Custom fitting supports a scalar symmetric percentage or `auto`; four directional values are rejected because the custom top has its own arbitrary outline. An omitted city boundary therefore defaults to scalar `10` for custom bases.
+Custom STL fitting supports city mode. OSM buildings, roads, bridges, and water are clipped to the exact inset custom top; terrain/buildings follow that surface, and the flush route and water cavities are cut into the custom base. Route and water depths must be smaller than the custom base thickness. Custom fitting supports a scalar symmetric percentage, `auto`, or `search`; four directional values are rejected because the custom top has its own arbitrary outline. An omitted city boundary defaults to scalar `10`, explicit city `auto` uses scalar `5`, and explicit `search` performs terrain-aware discovery.
 
 When `--text` is supplied, the largest fitting glyph height is selected unless `--font-size` is set. The compact run stays tangent to the continuous perimeter and follows `--text-align`. The head/tail seam remains centered at the bottom and reserves eight font spaces plus `--text-end-gap` and any quoted leading/trailing spaces. `--text-margin` reserves the requested minimum clearance in millimeters from both the outer shape boundary and the inner terrain boundary. Every glyph must fit entirely in the remaining area. Increase `--text-boundary-percent`, reduce the font size, margins, or gap, shorten the text, or choose a narrower font if the border cannot contain it.
 
@@ -428,7 +429,7 @@ cp settings.example.json /path/to/activities/.gpx2stl.settings.json
 
 JSON 键使用 Python/长参数对应的下划线名称，例如 `mode`、`route_width`、`route_depth`、`road_snap_distance`、`route_boundary_percent`、`topo_source`、`topo_dir`、`city_dir`、`building_default_height` 和 `building_height_scale`。也可用向后兼容的 `gpx_file` 键设置默认 `.gpx`/`.fit` 文件或目录；`--3mf` / `--no-3mf` 对应 `use_3mf`。相对字体、地形和城市缓存路径都以设置文件所在目录为基准解析。未知键、无效 JSON 或错误的数据类型都会产生明确错误。`.gpx2stl.settings.json` 已被 Git 忽略，而完整模板 `settings.example.json` 会纳入版本控制。
 
-四方向路线边界在 JSON 中按北、东、南、西顺序使用数组，例如 `"route_boundary_percent": [10, 15, 10, 15]`。单个数值仍表示对称边界，`"auto"` 仍表示基于 DEM 的山体搜索。
+四方向路线边界在 JSON 中按北、东、南、西顺序使用数组，例如 `"route_boundary_percent": [10, 15, 10, 15]`。单个数值仍表示对称边界。`"auto"` 在城市模式中解析为对称 5% 边界，在其他模式中解析为地形搜索；`"search"` 可在任何模式中显式强制地形搜索。
 
 `--boundary-percent` / `boundary_percent` 和 `--inner-size-percent` / `inner_size_percent` 已停用，使用时会报错并提示迁移方法。生成底座时，将旧边界键改为 `route_boundary_percent`，并按 `text_boundary_percent = (100 - inner_size_percent) / 2` 换算旧内圈尺寸；例如 70 对应文字边界 15。带文字的自定义 STL 底座中，旧边界值控制文字内缩，应移至 `text_boundary_percent`，并设置 `route_boundary_percent: 0` 以保留原来的最大路线缩放。无文字时，自定义地形现在使用完整顶面，文字边界被忽略。
 
@@ -518,7 +519,7 @@ python -m gpx2stl route.gpx --mode city --route-boundary-percent 10,20,10,20
 python -m gpx2stl route.gpx --mode city --road-snap-distance 0
 
 # 估算路线涉及的所有山体范围，每侧最多向外搜索 30 km
-python -m gpx2stl route.gpx --route-boundary-percent auto --auto-boundary-max-distance-km 30
+python -m gpx2stl route.gpx --route-boundary-percent search --auto-boundary-max-distance-km 30
 
 # 四对象 3MF：底座、圆形地形、凸起全周文字和路线
 python -m gpx2stl route.gpx --shape hex --text "MOUNT RAINIER"
@@ -569,8 +570,8 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 | `--route-depth` | 城市：`1.5` mm；其他：`0.6` mm | 城市模式中齐平路线嵌件及凹槽的深度，必须小于底座厚度。 |
 | `--water-depth` | `0.4` mm | 城市模式中齐平水体嵌件及凹槽的深度，必须小于生成或自定义底座厚度。 |
 | `--topo`, `--no-topo` | 启用 | 启用或禁用地形。 |
-| `--route-boundary-percent` | 城市生成底座：`10,10,10,10`；城市自定义底座：`10`；地形：`auto`；无地形：`10` | 一个有限非负对称百分比、按 `北,东,南,西` 排列的四个逗号分隔百分比，或基于 DEM 搜索山体的 `auto`。设置文件使用四数字 JSON 数组。显式 `auto` 必须启用地形；四方向值仅支持生成底座。 |
-| `--auto-boundary-max-distance-km` | `10` km | 自动模式下，从路线包围盒每侧向外搜索的最大距离，必须为有限正数。 |
+| `--route-boundary-percent` | 城市生成底座：`10,10,10,10`；城市自定义底座：`10`；地形：`auto`；无地形：`10` | 一个有限非负对称百分比、按 `北,东,南,西` 排列的四个逗号分隔百分比、上下文相关的 `auto` 或 `search`。城市模式中 `auto` 表示对称 5%，其他模式中表示地形搜索；`search` 始终强制搜索且要求启用地形。设置文件使用四数字 JSON 数组；四方向值仅支持生成底座。 |
+| `--auto-boundary-max-distance-km` | `10` km | 搜索模式下，从路线包围盒每侧向外搜索的最大距离，必须为有限正数。 |
 | `--auto-valley-max-relief-m` | `1000` m | 约 900 m 谷底邻域内平滑高程的最大变化；增大可接受不平整谷底。 |
 | `--auto-valley-max-slope-percent` | `100` % | 平滑谷底的最大坡度百分比（`2` 表示 2%，不是 200%）。 |
 | `--auto-valley-max-height-m` | `1000` m | 高于搜索窗口第 10 百分位高程基准的最大高度，同时受下方高差百分比限制。 |
@@ -609,8 +610,9 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 - 显式设置 `--terrain-height` 会覆盖真实比例，将 DEM 最低点到最高点的高度差归一化到指定毫米数。
 - 禁用地形时，路线顶部采用 GPX 或 FIT 高程和真实的 1:20,000 垂直比例：1,000 m 对应 50 mm。内部缺失高程会插值；端点或全部高程缺失会报错。
 - 城市模式会把带 OSM `bridge` 标记的道路、铁路和桥梁外形生成为可打印桥面。建筑和桥梁高度在水平地图比例之后默认放大 5 倍，以免较矮结构在城市尺度模型中消失；将 `building_height_scale` 设为 `1` 可恢复真实比例。
+- 城市数据始终使用固定的 0.01° 缓存网格。缺失瓦片会依次下载，每次请求之间至少等待两秒；读取已有缓存瓦片时不会等待或访问服务。
 - 城市水体包括 OSM 湖泊、池塘、水库、流域、河岸，按标注或推断宽度生成的河流/溪流/运河，以及有向海岸线的临海一侧。水体会裁剪到可打印地形，并作为独立且表面齐平的 `Water` 嵌件输出；路线穿过水面时路线材料优先。
-- 数值边界模式下，方形为加边界前包围路线的最小正北方形；圆形为真实最小包围圆；六边形为可平移的最小平顶正六边形。自动模式同时适配八方向地理选择多边形与路线。
+- 数值边界模式下，方形为加边界前包围路线的最小正北方形；圆形为真实最小包围圆；六边形为可平移的最小平顶正六边形。搜索模式同时适配八方向地理选择多边形与路线。
 - 四方向边界先独立扩大路线包围盒：北/南百分比以南北跨度为基准，东/西百分比以东西跨度为基准，再围绕该矩形适配方形、圆形或六边形。城市模式默认 `10,10,10,10`。某轴跨度为零时，该轴百分比不会增加距离，但仍会预留可打印路线宽度。
 - 指定 `--text` 后，`--max-size` 控制方形、圆形或六边形外框尺寸。居中地形圆的直径为 `max_size × (1 - 2 × text_boundary_percent / 100)`，其余外框保持在底座顶面的平坦高度。默认文字边界 7% 保留 86% 地形直径。六边形需要大于约 6.7% 才能在较窄两侧留出文字带；字形及边距可能需要更多空间。
 - 数值 `--route-boundary-percent` 在缩放前给最小路线外形增加边界：方形边长乘以 `1 + 2 × route_boundary_percent / 100`，圆形或六边形半径乘以 `1 + route_boundary_percent / 100`，路线宽度另行预留。改变路线边界不会改变文字带。无文字时忽略文字边界，使用完整生成外形。
@@ -619,11 +621,11 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 - 凸起文字会略微伸入底座，并在 STL 输出中与其他部分合并。仅限 3MF 的嵌入模式会在底座切出凹槽，并以独立文字材料对象填充至表面齐平；`--text-depth` 控制嵌件深度。
 - 支持跨越 ±180° 日期变更线的路线；此时会拆分 DEM 请求。
 
-### 自动山体边界
+### 地形感知山体边界搜索
 
-`--route-boundary-percent auto`（JSON：`"route_boundary_percent": "auto"`）基于 DEM 的山顶/山谷分割，估算完整路线涉及的所有山体地形，包括跨越多个山峰的路线。程序逐步扩大嵌套搜索窗口，独立分析八个方向：N（北）、NE（东北）、E（东）、SE（东南）、S（南）、SW（西南）、W（西）、NW（西北）。可靠边界要求山谷边界位于搜索窗口内部，且相邻窗口间该方向的地形几何稳定。后续证据变化时，候选边界可能重新变为未确定。这是基于地形的估算，不能保证精确对应某座具名山峰的边界。
+`--route-boundary-percent search`（JSON：`"route_boundary_percent": "search"`）基于 DEM 的山顶/山谷分割，估算完整路线涉及的所有山体地形，包括跨越多个山峰的路线。在非城市模式中，`auto` 解析为相同的搜索行为；在城市模式中，`auto` 改为对称 5% 边界，因此需要显式使用 `search` 才会强制搜索。搜索要求启用地形。程序逐步扩大嵌套搜索窗口，独立分析八个方向：N（北）、NE（东北）、E（东）、SE（东南）、S（南）、SW（西南）、W（西）、NW（西北）。可靠边界要求山谷边界位于搜索窗口内部，且相邻窗口间该方向的地形几何稳定。后续证据变化时，候选边界可能重新变为未确定。这是基于地形的估算，不能保证精确对应某座具名山峰的边界。
 
-自动模式保留每个可靠识别方向的约束，包括完整分析单元范围与安全余量，即使其留白超过 100%。完成正常的有限搜索后，达到搜索上限仍未确定的方向按该方向的路线投影跨度向外留白 100%。没有可用识别结果时（无山谷标记、平坦或模糊地形、或没有路线涉及的山体区域），八个方向全部回退，并明确警告；不会将其描述为完整山体识别成功。
+搜索模式保留每个可靠识别方向的约束，包括完整分析单元范围与安全余量，即使其留白超过 100%。完成正常的有限搜索后，达到搜索上限仍未确定的方向按该方向的路线投影跨度向外留白 100%。没有可用识别结果时（无山谷标记、平坦或模糊地形、或没有路线涉及的山体区域），八个方向全部回退，并明确警告；不会将其描述为完整山体识别成功。
 
 方向使用路线局部米制投影中的单位法向量（X 向东，Y 向北）。对于每个法向量 `u`，回退规则为：
 
@@ -652,14 +654,14 @@ NE 使用 `u = (1, 1) / sqrt(2)` 及自身的路线投影跨度，而不是北�
 例如，降低全部四项阈值，可尝试比默认值更保守的条件：
 
 ```bash
-python -m gpx2stl route.gpx --route-boundary-percent auto --auto-valley-max-relief-m 35 --auto-valley-max-slope-percent 3 --auto-valley-max-height-m 150 --auto-valley-max-height-percent 15
+python -m gpx2stl route.gpx --route-boundary-percent search --auto-valley-max-relief-m 35 --auto-valley-max-slope-percent 3 --auto-valley-max-height-m 150 --auto-valley-max-height-percent 15
 ```
 
 对应 JSON：
 
 ```json
 {
-  "route_boundary_percent": "auto",
+  "route_boundary_percent": "search",
   "auto_valley_max_relief_m": 35,
   "auto_valley_max_slope_percent": 3,
   "auto_valley_max_height_m": 150,
@@ -669,7 +671,7 @@ python -m gpx2stl route.gpx --route-boundary-percent auto --auto-valley-max-reli
 
 这些数值仅用于试验，不是通用预设，也不保证识别成功。日志会打印当前阈值。放宽条件可能把缓坡山麓误认为谷底、裁剪山坡或改变所选区域；边界仍必须通过独立方向稳定性检查，未确定方向仍使用现有的 100% 回退。高程基准依赖整个窗口，并非局部水系或鞍部检测，因此调参不能保证识别所有可见山谷。DEM 覆盖、分辨率及资源检查保持严格。
 
-省略路线边界时，城市模式默认使用四方向 `10,10,10,10`，普通地形模式默认使用 `auto`，禁用地形默认使用数值 `10`。显式 `auto` 与 `--no-topo` 同时使用会报错，包括设置文件中的 `auto`；此时用 `--no-topo --route-boundary-percent 10` 覆盖。没有单独的自动边界布尔开关。标量数值边界行为和独立文字边界保持不变。纳入版本控制的设置模板为默认地形配置保留 `"auto"`；城市配置可使用上文的四数字 JSON 数组。
+省略路线边界时，城市模式默认使用四方向 `10,10,10,10`，普通地形模式默认使用上下文相关的 `auto`，禁用地形默认使用数值 `10`。显式 `auto` 在城市模式中解析为对称 `5`，在其他模式中解析为 `search`。显式 `search`（以及非城市模式的 `auto`）要求启用地形；使用 `--no-topo` 时应改用数值百分比。标量数值边界行为和独立文字边界保持不变。纳入版本控制的设置模板为默认地形配置保留 `"auto"`；同一设置用于城市配置时表示对称 5%，而 `"search"` 会强制搜索。
 
 ### 自定义 STL 底座
 
@@ -683,9 +685,9 @@ python -m gpx2stl route.gpx --route-boundary-percent auto --auto-valley-max-reli
 内缩距离 = text-boundary-percent / 100 × min(顶面宽度, 顶面高度)
 ```
 
-无文字时不进行文字内缩，地形使用完整顶面。GPX 保持正北朝上。数值模式以可用地形区域为中心，先求出在边缘预留半个路线宽度后的最大缩放，再除以 `1 + route_boundary_percent / 100`，以添加独立的路线边界。自动模式将完整八方向选择多边形与路线带一起适配，按需重新定位地理中心并缩小比例。程序检查完整包含关系；与凹边或孔洞冲突时会明确报错，不会裁切选择多边形或路线。改变路线边界不会改变地形区域或文字带。自定义 STL 本身绝不会被 `--max-size` 缩放。最终 DEM 请求范围根据地形区域计算。
+无文字时不进行文字内缩，地形使用完整顶面。GPX 保持正北朝上。数值模式以可用地形区域为中心，先求出在边缘预留半个路线宽度后的最大缩放，再除以 `1 + route_boundary_percent / 100`，以添加独立的路线边界。搜索模式将完整八方向选择多边形与路线带一起适配，按需重新定位地理中心并缩小比例。程序检查完整包含关系；与凹边或孔洞冲突时会明确报错，不会裁切选择多边形或路线。改变路线边界不会改变地形区域或文字带。自定义 STL 本身绝不会被 `--max-size` 缩放。最终 DEM 请求范围根据地形区域计算。
 
-自定义 STL 支持城市模式。OSM 建筑、道路、桥梁和水体会裁剪到精确的内缩自定义顶面；地形和建筑贴合该表面，齐平路线及水体凹槽直接切入自定义底座。路线及水体深度必须小于自定义底座厚度。自定义适配支持单个对称百分比或 `auto`；由于自定义顶面可以是任意外形，四方向百分比会被明确拒绝。因此城市模式配合自定义底座且省略边界时默认使用标量 `10`。
+自定义 STL 支持城市模式。OSM 建筑、道路、桥梁和水体会裁剪到精确的内缩自定义顶面；地形和建筑贴合该表面，齐平路线及水体凹槽直接切入自定义底座。路线及水体深度必须小于自定义底座厚度。自定义适配支持单个对称百分比、`auto` 或 `search`；由于自定义顶面可以是任意外形，四方向百分比会被明确拒绝。城市模式配合自定义底座且省略边界时默认使用标量 `10`，显式城市 `auto` 使用标量 `5`，显式 `search` 执行地形感知搜索。
 
 指定 `--text` 后，除非设置 `--font-size`，程序会选择可容纳的最大字高。紧凑文字段与连续边框路径相切，并遵循 `--text-align`。文字首尾接缝固定在底部中央，并保留八个字体空格、`--text-end-gap` 以及引号内首尾空格的总间距。`--text-margin` 可指定文字与外侧形状边界及内侧地形边界之间的最小毫米间距。每个字形都必须完整位于剩余区域内。如果空间不足，请增大 `--text-boundary-percent`，减小字高、文字边距或接缝，缩短文字或选择更窄的字体。
 

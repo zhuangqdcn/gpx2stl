@@ -31,7 +31,13 @@ from gpx2stl.footprint import (
 )
 from gpx2stl.gpx import interpolate_elevations, project_paths
 from gpx2stl.mesh import build_geometry
-from gpx2stl.models import Config, Footprint, ModelTransform, ProjectedRoute
+from gpx2stl.models import (
+    Config,
+    DirectionalRouteBoundary,
+    Footprint,
+    ModelTransform,
+    ProjectedRoute,
+)
 from gpx2stl.progress import ProgressCallback, console_progress
 from gpx2stl.road_match import match_route_to_roads
 
@@ -221,13 +227,19 @@ def convert(
     config: Config, progress: ProgressCallback = console_progress
 ) -> None:
     boundary = config.resolved_route_boundary_percent
-    auto = boundary == "auto"
-    numeric_boundary = 0.0 if boundary == "auto" else boundary
-    if auto and not config.topo:
-        raise Gpx2StlError(
-            "Automatic route boundaries require topography; select a numeric "
-            "--route-boundary-percent when using --no-topo."
-        )
+    if config.mode == "city" and not config.topo:
+        raise Gpx2StlError("City mode requires topography.")
+    if boundary == "search":
+        if not config.topo:
+            raise Gpx2StlError(
+                "Terrain-aware route boundary search requires topography; select a "
+                "numeric --route-boundary-percent when using --no-topo."
+            )
+        search = True
+        numeric_boundary: float | DirectionalRouteBoundary = 0.0
+    else:
+        search = False
+        numeric_boundary = boundary
     progress(f"Reading activity paths from {config.gpx_file}")
     paths = read_activity(config.gpx_file)
     point_count = sum(len(path.latitude) for path in paths)
@@ -241,7 +253,7 @@ def convert(
     progress("Projecting geographic coordinates into a local metric system")
     route = project_paths(paths)
     discovery = None
-    if auto:
+    if search:
         progress("Discovering terrain-aware automatic geographic boundaries")
         discovery = discover_auto_boundary(
             route,

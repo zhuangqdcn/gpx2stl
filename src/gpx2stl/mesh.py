@@ -951,6 +951,28 @@ def _variable_extrusion(
     bottom_height: HeightFunction,
     top_height: HeightFunction,
 ) -> trimesh.Trimesh:
+    normalized = shapely.set_precision(polygon, grid_size=1e-6)
+    parts = tuple(_polygon_parts(normalized))
+    if not parts:
+        raise Gpx2StlError("Variable-height extrusion has no printable area.")
+    components = [
+        _variable_extrusion_part(part, bottom_height, top_height)
+        for part in parts
+    ]
+    result = (
+        components[0]
+        if len(components) == 1
+        else trimesh.util.concatenate(components)
+    )
+    result.remove_unreferenced_vertices()
+    return result
+
+
+def _variable_extrusion_part(
+    polygon: Polygon,
+    bottom_height: HeightFunction,
+    top_height: HeightFunction,
+) -> trimesh.Trimesh:
     rings = [polygon.exterior, *polygon.interiors]
     coordinates: list[tuple[float, float]] = []
     for ring in rings:
@@ -966,7 +988,7 @@ def _variable_extrusion(
     bottom = bottom_height(xy)
     top = top_height(xy)
     if np.any(top <= bottom):
-        raise Gpx2StlError("Route geometry has non-positive thickness.")
+        raise Gpx2StlError("Variable-height extrusion has non-positive thickness.")
     count = len(xy)
     vertices = np.vstack((np.column_stack((xy, bottom)), np.column_stack((xy, top))))
     faces: list[tuple[int, int, int]] = []
