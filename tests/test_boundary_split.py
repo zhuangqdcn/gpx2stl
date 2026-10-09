@@ -19,6 +19,7 @@ from gpx2stl.footprint import (
     create_model_transform,
 )
 from gpx2stl.gpx import project_paths, read_gpx
+from gpx2stl.mesh import _model_outline
 from gpx2stl.models import Config
 from gpx2stl.pipeline import convert
 
@@ -255,22 +256,51 @@ def test_config_terrain_size_uses_only_text_boundary_when_text_is_present(
     assert config.terrain_size == pytest.approx(expected)
 
 
-@pytest.mark.parametrize("text_boundary_percent", [0.0, 5.0])
-def test_hex_text_boundary_must_fit_inside_frame(
-    simple_gpx: Path, capsys: pytest.CaptureFixture[str], text_boundary_percent: float,
+def test_hex_text_boundary_must_leave_text_band(simple_gpx: Path) -> None:
+    parser = create_parser()
+    config = config_from_args(
+        parser.parse_args(
+            [
+                str(simple_gpx), "--no-topo", "--shape", "hex", "--text", "I",
+                "--text-boundary-percent", "0",
+            ]
+        ),
+        parser,
+    )
+    with pytest.raises(Gpx2StlError, match="no text band.*|--text-boundary-percent"):
+        convert(config, progress=lambda _: None)
+
+
+def test_hex_text_accepts_boundary_below_former_circle_limit(
+    simple_gpx: Path, tmp_path: Path,
 ) -> None:
     parser = create_parser()
+    config = config_from_args(
+        parser.parse_args(
+            [
+                str(simple_gpx), "--no-topo", "--shape", "hex", "--text", "I",
+                "--text-boundary-percent", "5", "--output", str(tmp_path / "hex.3mf"),
+            ]
+        ),
+        parser,
+    )
+    convert(config, progress=lambda _: None)
+    assert config.output.is_file()
+
+
+@pytest.mark.parametrize("text", [None, "I"])
+def test_hex_route_width_must_fit_between_flat_sides(
+    simple_gpx: Path, text: str | None,
+) -> None:
+    arguments = [
+        str(simple_gpx), "--no-topo", "--shape", "hex",
+        "--max-size", "20", "--route-width", "18",
+    ]
+    if text is not None:
+        arguments.extend(["--text", text])
+    parser = create_parser()
     with pytest.raises(SystemExit):
-        config_from_args(
-            parser.parse_args(
-                [
-                    str(simple_gpx), "--no-topo", "--shape", "hex", "--text", "I",
-                    "--text-boundary-percent", str(text_boundary_percent),
-                ]
-            ),
-            parser,
-        )
-    assert "--text-boundary-percent" in capsys.readouterr().err
+        config_from_args(parser.parse_args(arguments), parser)
 
 
 def test_hex_without_text_ignores_zero_text_boundary(simple_gpx: Path) -> None:
@@ -336,7 +366,7 @@ def test_generated_route_padding_preserves_terrain_and_text_size(
     terrain_size = 28.0 if text else 40.0
     assert np.ptp(padded["geometry"].topography.bounds[:, 0]) == pytest.approx(terrain_size)
     expected = create_footprint(
-        padded["route"].points, "circle" if text else shape, 30,
+        padded["route"].points, shape, 30,
         config.route_width / terrain_size,
     )
     expected = add_route_clearance(expected, config.route_width, terrain_size)
@@ -344,6 +374,15 @@ def test_generated_route_padding_preserves_terrain_and_text_size(
         create_model_transform(expected, terrain_size).scale
     )
     terrain = MultiPoint(padded["geometry"].topography.vertices[:, :2]).convex_hull
+    assert padded["footprint"].shape == shape
+    if shape == "circle":
+        radii = np.linalg.norm(np.asarray(terrain.exterior.coords), axis=1)
+        assert radii == pytest.approx(terrain_size / 2)
+        assert terrain.area == pytest.approx(np.pi * (terrain_size / 2) ** 2, rel=0.003)
+    else:
+        expected_outline = Polygon(_model_outline(shape, terrain_size))
+        assert terrain.symmetric_difference(expected_outline).area < 1e-6
+        assert len(terrain.exterior.coords) - 1 == (6 if shape == "hex" else 4)
     for path in padded["route"].paths:
         assert terrain.buffer(1e-6).covers(
             LineString(padded["transform"].to_model(path)).buffer(config.route_width / 2)

@@ -120,7 +120,7 @@ def test_auto_fits_entire_envelope_preserving_shape_and_text(
     assert actual_config is config
     assert calls["discover"] == [(route, 12)]
     assert custom is None
-    assert footprint.shape == ("circle" if text_mode else shape)
+    assert footprint.shape == shape
     assert footprint.diameter * transform.scale == pytest.approx(config.terrain_size)
     assert transform.footprint.center[0] > route.points[:, 0].max()
     pipeline._validate_auto_fit(envelope, route, footprint, transform, None, config.route_width)
@@ -526,7 +526,7 @@ def test_auto_real_mesh_stays_watertight_and_has_expected_model_size(monkeypatch
 
 
 @pytest.mark.parametrize("text_mode", ["raised", "embedded"])
-def test_auto_real_text_keeps_hex_frame_and_independent_circular_inset(
+def test_auto_real_text_keeps_hex_frame_and_independent_hex_inset(
     monkeypatch, text_mode
 ) -> None:
     from gpx2stl.mesh import build_geometry
@@ -536,7 +536,7 @@ def test_auto_real_text_keeps_hex_frame_and_independent_circular_inset(
     built = []
 
     def build(*args):
-        assert args[1].shape == "circle"
+        assert args[1].shape == "hex"
         assert args[1].diameter * args[2].scale == pytest.approx(28)
         geometry = build_geometry(*args)
         built.append(geometry)
@@ -554,3 +554,5 @@ def test_auto_real_text_keeps_hex_frame_and_independent_circular_inset(
     assert geometry.text is not None and geometry.text.is_watertight
     assert geometry.base.extents[0] == pytest.approx(40, abs=0.01)
     assert geometry.base.extents[1] == pytest.approx(40 * np.sqrt(3) / 2, abs=0.01)
+    assert geometry.topography.extents[0] == pytest.approx(28, abs=0.01)
+    assert geometry.topography.extents[1] == pytest.approx(28 * np.sqrt(3) / 2, abs=0.01)

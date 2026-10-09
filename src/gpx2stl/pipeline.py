@@ -326,7 +326,7 @@ def convert(
         )
     else:
         terrain_size = config.terrain_size
-        footprint_shape = "circle" if config.text is not None else config.shape
+        footprint_shape = config.shape
         minimum_footprint = config.route_width / terrain_size
         footprint = create_footprint(
             (np.vstack((np.asarray(discovery.envelope.exterior.coords), route.points))
@@ -360,7 +360,7 @@ def convert(
         )
     else:
         progress(
-            f"Created {config.shape} frame with {terrain_size:.1f} mm circular "
+            f"Created {config.shape} frame with {terrain_size:.1f} mm {config.shape} "
             f"terrain inset for {footprint.diameter / 1000:.2f} km source span"
         )
 

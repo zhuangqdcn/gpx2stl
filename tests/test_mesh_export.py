@@ -11,7 +11,8 @@ import shapely
 import trimesh
 from matplotlib.textpath import TextToPath
 from matplotlib.textpath import TextPath
-from shapely.geometry import Polygon, box
+from shapely.geometry import LineString, MultiPoint, Polygon, box
+from shapely.ops import polygonize
 
 from gpx2stl.errors import Gpx2StlError
 from gpx2stl.export import export_geometry
@@ -26,6 +27,7 @@ from gpx2stl.mesh import (
     _compensate_structure_footprint,
     _font_properties,
     _generated_text_layout,
+    _model_outline,
     _resolve_structure_overlaps,
     _structure_printable_clip,
     _variable_extrusion,
@@ -343,7 +345,7 @@ def _text_geometry(
     paths = tuple(interpolate_elevations(path) for path in read_gpx(simple_gpx))
     route = project_paths(paths)
     terrain_size = 14.0
-    footprint = create_footprint(route.points, "circle", 10.0, 1.0)
+    footprint = create_footprint(route.points, shape, 10.0, 1.0)
     footprint = add_route_clearance(footprint, 1.0, terrain_size)
     transform = create_model_transform(footprint, terrain_size)
     config = Config(
@@ -498,21 +500,26 @@ def test_text_end_gap_reports_when_perimeter_is_too_short(
         )
 
 
+@pytest.mark.parametrize("shape", ["square", "circle", "hex"])
 def test_text_margin_controls_generated_frame_clearance(
-    simple_gpx: Path, tmp_path: Path
+    simple_gpx: Path, tmp_path: Path, shape: Shape,
 ) -> None:
     geometry, config = _text_geometry(
         simple_gpx,
         tmp_path / "unused.3mf",
         True,
-        shape="circle",
-        text_margin=1.0,
+        shape=shape,
+        text_margin=0.25,
     )
     assert geometry.text is not None
-    radii = np.linalg.norm(geometry.text.vertices[:, :2], axis=1)
-    inner_radius = config.max_size * (1.0 - 2.0 * config.text_boundary_percent / 100.0) / 2.0
-    assert np.min(radii) >= inner_radius + config.text_margin - 1e-7
-    assert np.max(radii) <= config.max_size / 2.0 - config.text_margin + 1e-7
+    outer = Polygon(_model_outline(shape, config.max_size))
+    inner = Polygon(_model_outline(shape, config.terrain_size, segments=256))
+    layout = _generated_text_layout(config, config.terrain_size / 2)
+    for glyph in layout.polygons:
+        assert outer.covers(glyph)
+        assert not inner.intersects(glyph)
+        assert glyph.distance(outer.boundary) >= config.text_margin - 1e-7
+        assert glyph.distance(inner) >= config.text_margin - 1e-7
 
 
 def test_text_margin_reports_when_frame_is_too_narrow(
@@ -654,15 +661,19 @@ def test_3mf_with_text_has_three_meshes_and_four_material_slots(
     assert group.GetAllPropertyIDs() == [1, 2, 3, 4]
 
 
+@pytest.mark.parametrize("shape", ["square", "circle", "hex"])
+@pytest.mark.parametrize("text_mode", ["raised", "embedded"])
 def test_3mf_with_topography_and_text_has_four_named_objects(
-    simple_gpx: Path, tmp_path: Path
+    simple_gpx: Path, tmp_path: Path, shape: Shape, text_mode: str,
 ) -> None:
     output = tmp_path / "route-topo-text.3mf"
-    geometry, config = _text_geometry(simple_gpx, output, True)
+    geometry, config = _text_geometry(
+        simple_gpx, output, True, shape=shape, text_mode=text_mode,
+    )
     config = Config(**{**config.__dict__, "topo": True})
     paths = read_gpx(simple_gpx)
     route = project_paths(paths)
-    footprint = create_footprint(route.points, "circle", 10.0, 1.0)
+    footprint = create_footprint(route.points, config.shape, 10.0, 1.0)
     footprint = add_route_clearance(footprint, 1.0, 14.0)
     transform = create_model_transform(footprint, 14.0)
     geometry = build_geometry(route, footprint, transform, config, SlopedDem())
@@ -690,6 +701,22 @@ def test_3mf_with_topography_and_text_has_four_named_objects(
         "Filament 3 - Text",
         "Filament 4 - Base",
     ]
+    objects = model.GetMeshObjects()
+    while objects.MoveNext():
+        mesh = objects.GetCurrentMeshObject()
+        if mesh.GetName() == "Topography":
+            points = np.array([vertex.Coordinates[:] for vertex in mesh.GetVertices()])
+            outline = MultiPoint(points[:, :2]).convex_hull
+            if shape == "circle":
+                radii = np.linalg.norm(np.asarray(outline.exterior.coords), axis=1)
+                assert radii == pytest.approx(config.terrain_size / 2, abs=1e-6)
+                assert outline.area == pytest.approx(
+                    np.pi * (config.terrain_size / 2) ** 2, rel=0.003,
+                )
+            else:
+                expected = Polygon(_model_outline(shape, config.terrain_size))
+                assert outline.symmetric_difference(expected).area < 1e-4
+                assert len(outline.exterior.coords) - 1 == (6 if shape == "hex" else 4)
 
 
 def test_stl_round_trip_is_watertight(simple_gpx: Path, tmp_path: Path) -> None:
@@ -710,20 +737,42 @@ def test_stl_with_text_is_watertight(simple_gpx: Path, tmp_path: Path) -> None:
     assert loaded.is_watertight
 
 
+@pytest.mark.parametrize("shape", ["square", "circle", "hex"])
 def test_stl_unions_separate_base_topography_route_and_text(
-    simple_gpx: Path, tmp_path: Path
+    simple_gpx: Path, tmp_path: Path, shape: Shape,
 ) -> None:
     output = tmp_path / "route-topo-text.stl"
-    _, original_config = _text_geometry(simple_gpx, output, False)
-    config = Config(**{**original_config.__dict__, "topo": True})
+    _, original_config = _text_geometry(simple_gpx, output, False, shape=shape)
+    config = replace(original_config, topo=True, terrain_height=3.0)
     route = project_paths(read_gpx(simple_gpx))
-    footprint = create_footprint(route.points, "circle", 10.0, 1.0)
+    footprint = create_footprint(route.points, config.shape, 10.0, 1.0)
     footprint = add_route_clearance(footprint, 1.0, 14.0)
     transform = create_model_transform(footprint, 14.0)
-    geometry = build_geometry(route, footprint, transform, config, SlopedDem())
+
+    class BowlDem:
+        def sample_projected(self, points, route):
+            return np.linalg.norm(points - points.mean(axis=0), axis=1)
+
+    geometry = build_geometry(route, footprint, transform, config, BowlDem())
 
     export_geometry(geometry, config)
 
     loaded = trimesh.load_mesh(output, process=True)
     assert isinstance(loaded, trimesh.Trimesh)
     assert loaded.is_watertight
+    section = loaded.section(
+        plane_origin=[0, 0, config.base_height + 0.1],
+        plane_normal=[0, 0, 1],
+    )
+    assert section is not None
+    outlines = list(polygonize([
+        LineString(section.vertices[entity.points, :2])
+        for entity in section.entities
+    ]))
+    terrain = max(outlines, key=lambda polygon: polygon.area).convex_hull
+    expected = (
+        MultiPoint(geometry.topography.vertices[:, :2]).convex_hull
+        if shape == "circle"
+        else Polygon(_model_outline(shape, config.terrain_size))
+    )
+    assert terrain.symmetric_difference(expected).area < 1e-4

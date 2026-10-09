@@ -425,7 +425,8 @@ def create_parser(settings: dict[str, Any] | None = None) -> argparse.ArgumentPa
         "--text-boundary-percent",
         type=_text_boundary_percentage,
         default=7.0,
-        help="per-side text band inset in percent; ignored without text (default: 7)",
+        help="matching-shape terrain width reduction per side in percent; "
+        "custom bases use a top inset; ignored without text (default: 7)",
     )
     parser.add_argument(
         "--font-family",
@@ -668,17 +669,8 @@ def config_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser) 
             if text is not None
             else args.max_size
         )
-        if text is None and args.shape == "hex":
+        if args.shape == "hex":
             available_route_width *= math.sqrt(3.0) / 2.0
-        if (
-            text is not None
-            and args.shape == "hex"
-            and available_route_width >= args.max_size * math.sqrt(3.0) / 2.0
-        ):
-            parser.error(
-                "The terrain circle leaves no text band inside the hex frame; "
-                "increase --text-boundary-percent."
-            )
         if args.route_width >= available_route_width:
             parser.error(
                 "--route-width must be smaller than the available terrain width "

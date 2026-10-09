@@ -152,7 +152,7 @@ python -m gpx2stl route.gpx --mode city --road-snap-distance 0
 # Estimate all route-touched mountain extents, searching up to 30 km per side
 python -m gpx2stl route.gpx --route-boundary-percent search --auto-boundary-max-distance-km 30
 
-# Four-object 3MF: base, circular topography, raised text, and route
+# Four-object 3MF: hex base, hex topography, raised text, and route
 python -m gpx2stl route.gpx --shape hex --text "MOUNT RAINIER"
 
 # Add 3 mm to the default eight-space bottom seam
@@ -216,7 +216,7 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 | `--text-align` | `center` | Align the compact text run `left`, `center`, or `right` within the usable perimeter measured from the bottom seam. |
 | `--text-mode` | `raised` | Use `raised` text or an `embedded` flush inlay. Embedded text requires 3MF output. |
 | `--text-depth` | `0.6` mm | Depth of the cavity and flush text inlay in embedded mode. |
-| `--text-boundary-percent` | `7` | Per-side text-band inset as a percentage of outer width (custom bases: smaller top dimension); from 0 inclusive to 50 exclusive. Ignored without text. |
+| `--text-boundary-percent` | `7` | Matching-shape terrain width reduction per side as a percentage of outer width (custom bases: perpendicular inset based on the smaller top dimension); from 0 inclusive to 50 exclusive. Ignored without text. |
 | `--font-family` | `DejaVu Sans` | Installed font family used for text. |
 | `--font-file` | none | Exact custom `.ttf`, `.otf`, or `.ttc` face for scripts not covered by an installed font; cannot be combined with family/weight/style options. |
 | `--font-size` | automatic | Requested glyph height in millimeters; omitted text is automatically fitted. |
@@ -253,7 +253,7 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 - City water includes OSM lakes, ponds, reservoirs, basins, riverbanks, width-tagged or inferred rivers/streams/canals, and the sea-facing side of directed coastlines. It is clipped to the printable terrain and exported as a separate flush `Water` inlay; `--water-depth` controls its cavity depth. The route takes material priority where it crosses water.
 - In numeric boundary mode, square output is the smallest north-up square around the route before padding. Circle output uses the true minimum enclosing circle. Hex output uses the minimum translated flat-top regular hexagon. Search mode fits the eight-direction geographic selection polygon together with the route.
 - Four-value padding expands the route bounding box independently: N/S percentages use its north-south span, while E/W percentages use its east-west span. The selected square, circle, or hex is then fitted around the padded rectangle. City mode defaults to `10,10,10,10`; a degenerate axis receives no percentage padding on that axis, but printable route-width clearance still applies.
-- When `--text` is present, `--max-size` controls the outer square, circle, or hex frame. The centered terrain circle has diameter `max_size × (1 - 2 × text_boundary_percent / 100)`; the rest of the frame stays flat at the base-top height. The default 7% text boundary retains an 86% terrain diameter. Hex frames need more than approximately 6.7% to leave a text band at their narrower sides; glyphs and margins may require more.
+- When `--text` is present, `--max-size` controls the outer square, circle, or hex frame. The centered terrain follows the same shape and orientation, with width `max_size × (1 - 2 × text_boundary_percent / 100)`; the rest of the frame stays flat at the base-top height. The default 7% text boundary retains an 86% terrain width. For flat-top hexagons, the perpendicular band width along each side is `max_size × text_boundary_percent / 100 × sqrt(3) / 2`. A positive boundary leaves a band, but glyphs and margins may require more space. Square/hex models with text now fit geography into matching terrain outlines rather than the previous circular inset, so route scale, DEM bounds, and true-scale relief can change. Circle models, models without text, and custom STL bases retain their existing outlines.
 - A numeric `--route-boundary-percent` pads the minimum route footprint before fitting it into the terrain: square side length is multiplied by `1 + 2 × route_boundary_percent / 100`, while circle/hex radius is multiplied by `1 + route_boundary_percent / 100`. Route-width clearance is added separately. Changing route boundary does not resize the text band. Without text, text boundary is ignored and the full generated footprint is available.
 - In 3MF output, the generated prism or supplied custom STL remains a separate `Base` object. Enabled relief is a separately watertight `Topography` object with a small intentional overlap into the base for reliable slicing. Disabling topo omits that object.
 - Text defaults to DejaVu Sans and is placed as a compact tangent run on the perimeter. `--text-align` positions that run in the usable perimeter after the bottom seam; it does not stretch inter-character spacing. Text is automatically fitted unless `--font-size` requests a glyph height. Select an installed family and variant with `--font-family`, `--font-weight`, and `--font-style`, or use `--font-file` to select one exact face. The bottom seam reserves eight font spaces by default; `--text-end-gap` adds an absolute gap and quoted leading/trailing spaces add font-relative gap. Missing fonts, variants, or glyphs are reported explicitly.
@@ -529,7 +529,7 @@ python -m gpx2stl route.gpx --mode city --road-snap-distance 0
 # 估算路线涉及的所有山体范围，每侧最多向外搜索 30 km
 python -m gpx2stl route.gpx --route-boundary-percent search --auto-boundary-max-distance-km 30
 
-# 四对象 3MF：底座、圆形地形、凸起全周文字和路线
+# 四对象 3MF：六边形底座、六边形地形、凸起文字和路线
 python -m gpx2stl route.gpx --shape hex --text "MOUNT RAINIER"
 
 # 在默认八个空格的底部接缝上再增加 3 mm
@@ -593,7 +593,7 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 | `--text-align` | `center` | 相对底部接缝在可用周长内将紧凑文字段设为 `left`、`center` 或 `right`。 |
 | `--text-mode` | `raised` | 使用 `raised` 凸起文字或 `embedded` 齐平嵌件；嵌入模式仅支持 3MF。 |
 | `--text-depth` | `0.6` mm | 嵌入模式中文字凹槽和齐平嵌件的深度。 |
-| `--text-boundary-percent` | `7` | 每侧文字边框内缩占外宽的百分比（自定义底座使用顶面较小尺寸）；大于等于 0 且小于 50，无文字时忽略。 |
+| `--text-boundary-percent` | `7` | 同形地形每侧宽度缩减占外宽的百分比（自定义底座按顶面较小尺寸进行垂直内缩）；大于等于 0 且小于 50，无文字时忽略。 |
 | `--font-family` | `DejaVu Sans` | 用于文字的已安装字体族。 |
 | `--font-file` | 无 | 精确指定自定义 `.ttf`、`.otf` 或 `.ttc` 字体文件；不可与字体族、粗细或样式选项组合。 |
 | `--font-size` | 自动 | 字形高度（毫米）；省略时自动适配。 |
@@ -624,7 +624,7 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 - 城市水体包括 OSM 湖泊、池塘、水库、流域、河岸，按标注或推断宽度生成的河流/溪流/运河，以及有向海岸线的临海一侧。水体会裁剪到可打印地形，并作为独立且表面齐平的 `Water` 嵌件输出；路线穿过水面时路线材料优先。
 - 数值边界模式下，方形为加边界前包围路线的最小正北方形；圆形为真实最小包围圆；六边形为可平移的最小平顶正六边形。搜索模式同时适配八方向地理选择多边形与路线。
 - 四方向边界先独立扩大路线包围盒：北/南百分比以南北跨度为基准，东/西百分比以东西跨度为基准，再围绕该矩形适配方形、圆形或六边形。城市模式默认 `10,10,10,10`。某轴跨度为零时，该轴百分比不会增加距离，但仍会预留可打印路线宽度。
-- 指定 `--text` 后，`--max-size` 控制方形、圆形或六边形外框尺寸。居中地形圆的直径为 `max_size × (1 - 2 × text_boundary_percent / 100)`，其余外框保持在底座顶面的平坦高度。默认文字边界 7% 保留 86% 地形直径。六边形需要大于约 6.7% 才能在较窄两侧留出文字带；字形及边距可能需要更多空间。
+- 指定 `--text` 后，`--max-size` 控制方形、圆形或六边形外框尺寸。居中地形与外框形状、方向一致，宽度为 `max_size × (1 - 2 × text_boundary_percent / 100)`，其余外框保持在底座顶面的平坦高度。默认文字边界 7% 保留 86% 地形宽度。平顶六边形每条边的垂直文字带宽度为 `max_size × text_boundary_percent / 100 × sqrt(3) / 2`。正值边界会留出文字带，但字形及边距可能需要更多空间。带文字的方形、六边形模型现在使用同形地形而非原来的圆形内圈，因此路线缩放、DEM 范围及真实比例地形高度可能改变；圆形模型、无文字模型及自定义 STL 底座的轮廓保持不变。
 - 数值 `--route-boundary-percent` 在缩放前给最小路线外形增加边界：方形边长乘以 `1 + 2 × route_boundary_percent / 100`，圆形或六边形半径乘以 `1 + route_boundary_percent / 100`，路线宽度另行预留。改变路线边界不会改变文字带。无文字时忽略文字边界，使用完整生成外形。
 - 在 3MF 输出中，生成的棱柱或提供的自定义 STL 会保留为独立的 `Base` 对象。启用的起伏地形是另一个独立水密的 `Topography` 对象，并略微伸入底座以确保切片可靠。禁用地形时不会生成该对象。
 - 文字默认使用 DejaVu Sans，并沿周长切线方向形成紧凑文字段。`--text-align` 相对底部接缝定位文字段，不会拉伸字符间距。省略 `--font-size` 时自动适配字高；可用字体族、粗细和样式选项选择已安装变体，或用 `--font-file` 精确指定一个字体文件。缺少字体、变体或字形时会明确报错。

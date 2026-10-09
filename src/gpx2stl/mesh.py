@@ -747,17 +747,26 @@ def _generated_text_layout(config: Config, inner_radius: float) -> _PerimeterTex
     outer_polygon = shapely.orient_polygons(
         Polygon(_model_outline(config.shape, config.max_size))
     )
-    inner_polygon = Point(0.0, 0.0).buffer(inner_radius, quad_segs=64)
+    inner_polygon = (
+        Point(0.0, 0.0).buffer(inner_radius, quad_segs=64)
+        if config.shape == "circle"
+        else Polygon(_model_outline(config.shape, inner_radius * 2.0))
+    )
     frame = outer_polygon.difference(inner_polygon)
     outer_apothem = (
         config.max_size * math.sqrt(3.0) / 4.0
         if config.shape == "hex"
         else config.max_size / 2.0
     )
-    frame_width = outer_apothem - inner_radius
+    inner_apothem = (
+        inner_radius * math.sqrt(3.0) / 2.0
+        if config.shape == "hex"
+        else inner_radius
+    )
+    frame_width = outer_apothem - inner_apothem
     if frame_width <= 0.0:
         raise Gpx2StlError(
-            "The terrain circle leaves no text band inside the generated frame; "
+            "The terrain inset leaves no text band inside the generated frame; "
             "increase --text-boundary-percent."
         )
     # Keep automatic clearance from consuming narrow bands, especially on hex frames.
@@ -1353,17 +1362,7 @@ def build_geometry(
         overlap_depth = min(0.05, config.base_height / 2.0)
         topography_bottom = config.base_height - overlap_depth
         if config.topo:
-            if config.text is not None:
-                if footprint.shape != "circle":
-                    raise Gpx2StlError("Text layout requires a circular terrain footprint.")
-                topography, surface = _polar_circle(
-                    footprint,
-                    transform,
-                    raw_height,
-                    config,
-                    topography_bottom,
-                )
-            elif footprint.shape == "square":
+            if footprint.shape == "square":
                 topography, surface = _structured_square(
                     footprint,
                     transform,

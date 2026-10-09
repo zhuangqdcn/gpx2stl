@@ -179,7 +179,7 @@ def test_fit_conversion_generates_an_independent_model(
     assert any(message.startswith("Loaded 2 paths") for message in messages)
 
 
-def test_text_conversion_uses_circular_inset_and_three_materials(
+def test_text_conversion_uses_hex_inset_and_three_materials(
     simple_gpx: Path, tmp_path: Path
 ) -> None:
     output = tmp_path / "text.3mf"
@@ -198,7 +198,7 @@ def test_text_conversion_uses_circular_inset_and_three_materials(
     )
     assert output.is_file()
     assert any(
-        message.startswith("Created hex frame with 14.0 mm circular terrain inset")
+        message.startswith("Created hex frame with 14.0 mm hex terrain inset")
         for message in messages
     )
     assert any(message.startswith("Generated text mesh") for message in messages)
@@ -219,7 +219,7 @@ def test_default_text_band_auto_fits_generated_frame(
     inner_radius = config.terrain_size / 2
     layout = _generated_text_layout(config, inner_radius)
     frame = Polygon(_model_outline(shape, config.max_size)).difference(
-        Point(0, 0).buffer(inner_radius, quad_segs=64)
+        Polygon(_model_outline(shape, config.terrain_size))
     )
     assert layout.polygons
     assert all(frame.buffer(1e-7).covers(glyph) for glyph in layout.polygons)
@@ -228,7 +228,7 @@ def test_default_text_band_auto_fits_generated_frame(
     assert config.output.is_file()
     assert any(
         message.startswith(
-            f"Created {shape} frame with {config.terrain_size:.1f} mm circular terrain inset"
+            f"Created {shape} frame with {config.terrain_size:.1f} mm {shape} terrain inset"
         )
         for message in messages
     )
@@ -251,16 +251,15 @@ def test_default_text_band_rejects_excessive_explicit_margin(
     assert not config.output.exists()
 
 
-def test_tiny_hex_default_text_band_reports_fit_guidance(
+def test_tiny_hex_default_text_band_fits(
     simple_gpx: Path, tmp_path: Path,
 ) -> None:
     config = Config(
         gpx_file=simple_gpx, output=tmp_path / "tiny-hex.3mf",
         topo=False, shape="hex", text="TRAIL", max_size=20.0,
     )
-    with pytest.raises(Gpx2StlError, match="cannot fit.*--text-boundary-percent"):
-        convert(config, progress=lambda _: None)
-    assert not config.output.exists()
+    convert(config, progress=lambda _: None)
+    assert config.output.is_file()
 
 
 def test_conversion_preserves_custom_stl_dimensions(
