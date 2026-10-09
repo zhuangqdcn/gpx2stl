@@ -668,6 +668,9 @@ def test_platform_topo_paths_override_generic_values() -> None:
         "topo_dir": "generic-assets",
         "topo_dir_windows": r"E:\terrain\windows-assets",
         "topo_dir_linux": "/mnt/e/terrain/linux-assets",
+        "city_dir": "generic-city",
+        "city_dir_windows": r"E:\terrain\windows-city",
+        "city_dir_linux": "/mnt/e/terrain/linux-city",
     }
 
     windows = _select_platform_topo_settings(settings, "win32")
@@ -675,8 +678,10 @@ def test_platform_topo_paths_override_generic_values() -> None:
 
     assert windows["topo_file"] == r"E:\terrain\windows.tif"
     assert windows["topo_dir"] == r"E:\terrain\windows-assets"
+    assert windows["city_dir"] == r"E:\terrain\windows-city"
     assert linux["topo_file"] == "/mnt/e/terrain/linux.tif"
     assert linux["topo_dir"] == "/mnt/e/terrain/linux-assets"
+    assert linux["city_dir"] == "/mnt/e/terrain/linux-city"
     assert not set(windows).intersection(gpx2stl.cli.PLATFORM_TOPO_KEYS)
     assert not set(linux).intersection(gpx2stl.cli.PLATFORM_TOPO_KEYS)
     assert settings["topo_dir"] == "generic-assets"
@@ -688,12 +693,15 @@ def test_null_platform_topo_paths_fall_back_to_generic_values() -> None:
         "topo_file_windows": None,
         "topo_dir": "generic-assets",
         "topo_dir_windows": None,
+        "city_dir": "generic-city",
+        "city_dir_windows": None,
     }
 
     selected = _select_platform_topo_settings(settings, "win32")
 
     assert selected["topo_file"] == "generic.tif"
     assert selected["topo_dir"] == "generic-assets"
+    assert selected["city_dir"] == "generic-city"
 
 
 def test_other_platforms_use_generic_topo_paths() -> None:
@@ -726,6 +734,28 @@ def test_selected_platform_relative_topo_path_uses_settings_directory(
     values = load_settings(settings)
 
     assert values["topo_dir"] == str((tmp_path / "platform-assets").resolve())
+
+
+def test_selected_platform_relative_city_path_uses_settings_directory(
+    tmp_path: Path,
+) -> None:
+    if gpx2stl.cli.sys.platform.startswith("win"):
+        platform_key = "city_dir_windows"
+    elif gpx2stl.cli.sys.platform.startswith("linux"):
+        platform_key = "city_dir_linux"
+    else:
+        pytest.skip("OS-specific city settings apply only to Windows and Linux")
+    settings = tmp_path / SETTINGS_FILENAME
+    settings.write_text(
+        json.dumps({platform_key: "platform-city-cache"}),
+        encoding="utf-8",
+    )
+
+    values = load_settings(settings)
+
+    assert values["city_dir"] == str(
+        (tmp_path / "platform-city-cache").resolve()
+    )
 
 
 @pytest.mark.parametrize("value", [123, True, [], {}])

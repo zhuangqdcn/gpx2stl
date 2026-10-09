@@ -61,7 +61,7 @@ Directional route padding uses a JSON array in north, east, south, west order, f
 
 `--boundary-percent` / `boundary_percent` and `--inner-size-percent` / `inner_size_percent` are retired and rejected with migration guidance. For generated bases, rename the old boundary setting to `route_boundary_percent` and replace the old inner-size setting with `text_boundary_percent = (100 - inner_size_percent) / 2`. Thus an inner size of 70 becomes a text boundary of 15. For custom STL bases with text, the old boundary value controlled the text inset: move it to `text_boundary_percent` and use `route_boundary_percent: 0` to preserve the previous maximum route fit. Without text, custom terrain now uses the full top; text boundary is ignored.
 
-For terrain paths shared between Windows and Linux/WSL, settings support `topo_file_windows`, `topo_file_linux`, `topo_dir_windows`, and `topo_dir_linux`. A non-null key matching the current OS overrides the corresponding generic `topo_file` or `topo_dir`. A null or absent OS-specific key falls back to the generic value. Paths for the inactive OS are not interpreted or resolved.
+For terrain and city-cache paths shared between Windows and Linux/WSL, settings support `topo_file_windows`, `topo_file_linux`, `topo_dir_windows`, `topo_dir_linux`, `city_dir_windows`, and `city_dir_linux`. A non-null key matching the current OS overrides the corresponding generic `topo_file`, `topo_dir`, or `city_dir`. A null or absent OS-specific key falls back to the generic value. Paths for the inactive OS are not interpreted or resolved.
 
 ```json
 {
@@ -70,11 +70,14 @@ For terrain paths shared between Windows and Linux/WSL, settings support `topo_f
   "topo_file_linux": null,
   "topo_dir": "asset",
   "topo_dir_windows": "E:\\terrain\\glo30",
-  "topo_dir_linux": "/mnt/e/terrain/glo30"
+  "topo_dir_linux": "/mnt/e/terrain/glo30",
+  "city_dir": "asset/city",
+  "city_dir_windows": "E:\\gpx-cache\\city",
+  "city_dir_linux": "/mnt/e/gpx-cache/city"
 }
 ```
 
-The complete path precedence is explicit `--topo-file` / `--topo-dir`, then the matching non-null OS-specific setting, then the generic setting, then the built-in `asset` directory default. `topo_file` still takes precedence over `topo_dir` after platform selection. Relative selected paths are resolved from the settings-file directory.
+The complete path precedence is an explicit CLI path, then the matching non-null OS-specific setting, then the generic setting, then the built-in default (`asset` for terrain and `asset/city` for city data). `topo_file` still takes precedence over `topo_dir` after platform selection. Relative selected paths are resolved from the settings-file directory.
 
 ```bash
 # Use a settings file with any name or location
@@ -429,7 +432,7 @@ JSON 键使用 Python/长参数对应的下划线名称，例如 `mode`、`route
 
 `--boundary-percent` / `boundary_percent` 和 `--inner-size-percent` / `inner_size_percent` 已停用，使用时会报错并提示迁移方法。生成底座时，将旧边界键改为 `route_boundary_percent`，并按 `text_boundary_percent = (100 - inner_size_percent) / 2` 换算旧内圈尺寸；例如 70 对应文字边界 15。带文字的自定义 STL 底座中，旧边界值控制文字内缩，应移至 `text_boundary_percent`，并设置 `route_boundary_percent: 0` 以保留原来的最大路线缩放。无文字时，自定义地形现在使用完整顶面，文字边界被忽略。
 
-为了在 Windows 与 Linux/WSL 之间共享地形设置，可使用 `topo_file_windows`、`topo_file_linux`、`topo_dir_windows` 和 `topo_dir_linux`。当前系统对应的非空键会覆盖通用 `topo_file` 或 `topo_dir`；对应键为空或不存在时会回退到通用值。程序不会解释或解析另一个操作系统的路径。
+为了在 Windows 与 Linux/WSL 之间共享地形及城市缓存设置，可使用 `topo_file_windows`、`topo_file_linux`、`topo_dir_windows`、`topo_dir_linux`、`city_dir_windows` 和 `city_dir_linux`。当前系统对应的非空键会覆盖通用 `topo_file`、`topo_dir` 或 `city_dir`；对应键为空或不存在时会回退到通用值。程序不会解释或解析另一个操作系统的路径。
 
 ```json
 {
@@ -438,11 +441,14 @@ JSON 键使用 Python/长参数对应的下划线名称，例如 `mode`、`route
   "topo_file_linux": null,
   "topo_dir": "asset",
   "topo_dir_windows": "E:\\terrain\\glo30",
-  "topo_dir_linux": "/mnt/e/terrain/glo30"
+  "topo_dir_linux": "/mnt/e/terrain/glo30",
+  "city_dir": "asset/city",
+  "city_dir_windows": "E:\\gpx-cache\\city",
+  "city_dir_linux": "/mnt/e/gpx-cache/city"
 }
 ```
 
-完整路径优先级为：显式 `--topo-file` / `--topo-dir`、当前系统对应的非空专用设置、通用设置、内置 `asset` 目录默认值。完成平台选择后，`topo_file` 仍优先于 `topo_dir`。选中的相对路径以设置文件所在目录为基准解析。
+完整路径优先级为：显式 CLI 路径、当前系统对应的非空专用设置、通用设置、内置默认值（地形为 `asset`，城市数据为 `asset/city`）。完成平台选择后，`topo_file` 仍优先于 `topo_dir`。选中的相对路径以设置文件所在目录为基准解析。
 
 ```bash
 # 使用任意名称或位置的设置文件

@@ -58,6 +58,8 @@ SETTING_KEYS = {
     "topo_dir_windows",
     "topo_dir_linux",
     "city_dir",
+    "city_dir_windows",
+    "city_dir_linux",
     "building_default_height",
     "building_height_scale",
     "water_depth",
@@ -71,6 +73,8 @@ PLATFORM_TOPO_KEYS = (
     "topo_file_linux",
     "topo_dir_windows",
     "topo_dir_linux",
+    "city_dir_windows",
+    "city_dir_linux",
 )
 RETIRED_SETTINGS = {
     "boundary_percent": "use route_boundary_percent for route padding and "
@@ -211,7 +215,7 @@ def _select_platform_topo_settings(
         else None
     )
     if platform_suffix is not None:
-        for generic_name in ("topo_file", "topo_dir"):
+        for generic_name in ("topo_file", "topo_dir", "city_dir"):
             platform_value = selected.get(f"{generic_name}_{platform_suffix}")
             if platform_value is not None:
                 selected[generic_name] = platform_value

@@ -40,6 +40,8 @@
   "topo_dir_windows": null,
   "topo_dir_linux": null,
   "city_dir": "asset/city",
+  "city_dir_windows": null,
+  "city_dir_linux": null,
   "building_default_height": 10.0,
   "building_height_scale": 5.0,
   "water_depth": 0.4,
