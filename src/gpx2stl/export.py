@@ -59,6 +59,16 @@ def _write_3mf(path: Path, geometry: Geometry) -> None:
         base_material = materials.AddMaterial(
             "Filament 4 - Base", _color(180, 180, 180)
         )
+        building_material = (
+            materials.AddMaterial("Filament 5 - Buildings", _color(210, 190, 160))
+            if geometry.buildings is not None or geometry.water is not None
+            else None
+        )
+        water_material = (
+            materials.AddMaterial("Filament 6 - Water", _color(60, 150, 220))
+            if geometry.water is not None
+            else None
+        )
 
         route = _add_mesh(model, geometry.route, "GPX route")
         route.SetObjectLevelProperty(materials.GetResourceID(), route_material)
@@ -80,6 +90,20 @@ def _write_3mf(path: Path, geometry: Geometry) -> None:
             text = _add_mesh(model, geometry.text, "Text")
             text.SetObjectLevelProperty(materials.GetResourceID(), text_material)
             assembly.AddComponent(text, identity)
+        if geometry.buildings is not None:
+            buildings = _add_mesh(model, geometry.buildings, "Buildings")
+            assert building_material is not None
+            buildings.SetObjectLevelProperty(
+                materials.GetResourceID(), building_material
+            )
+            assembly.AddComponent(buildings, identity)
+        if geometry.water is not None:
+            water = _add_mesh(model, geometry.water, "Water")
+            assert water_material is not None
+            water.SetObjectLevelProperty(
+                materials.GetResourceID(), water_material
+            )
+            assembly.AddComponent(water, identity)
         assembly.AddComponent(base, identity)
         model.AddBuildItem(assembly, identity)
         model.QueryWriter("3mf").WriteToFile(str(path))
@@ -93,6 +117,8 @@ def _write_3mf(path: Path, geometry: Geometry) -> None:
             2
             + int(geometry.topography is not None)
             + int(geometry.text is not None)
+            + int(geometry.buildings is not None)
+            + int(geometry.water is not None)
         )
         if mesh_count != expected_meshes or material_groups != 1:
             raise Gpx2StlError(
@@ -112,6 +138,10 @@ def _write_stl(path: Path, geometry: Geometry) -> None:
             meshes.append(geometry.topography)
         if geometry.text is not None:
             meshes.append(geometry.text)
+        if geometry.buildings is not None:
+            meshes.append(geometry.buildings)
+        if geometry.water is not None:
+            meshes.append(geometry.water)
         combined = trimesh.boolean.union(
             meshes,
             engine="manifold",
@@ -158,8 +188,17 @@ def export_geometry(
                 2
                 + int(geometry.topography is not None)
                 + int(geometry.text is not None)
+                + int(geometry.buildings is not None)
+                + int(geometry.water is not None)
             )
-            progress(f"Writing {object_count}-object, 4-material 3MF package")
+            material_count = (
+                6
+                if geometry.water is not None
+                else 5 if geometry.buildings is not None else 4
+            )
+            progress(
+                f"Writing {object_count}-object, {material_count}-material 3MF package"
+            )
             _write_3mf(temporary_path, geometry)
             progress("Validated 3MF mesh and material resources")
         else:

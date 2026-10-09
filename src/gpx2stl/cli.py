@@ -13,14 +13,17 @@ from dotenv import find_dotenv, load_dotenv
 from gpx2stl.activity import ACTIVITY_EXTENSIONS
 from gpx2stl.dem import iter_local_geotiffs
 from gpx2stl.errors import Gpx2StlError
-from gpx2stl.models import Config, RouteBoundaryPercent
+from gpx2stl.models import Config, DirectionalRouteBoundary, RouteBoundaryPercent
 from gpx2stl.pipeline import convert
 
 SETTING_KEYS = {
     "gpx_file",
     "output",
+    "mode",
     "route_width",
     "route_height",
+    "route_depth",
+    "road_snap_distance",
     "topo",
     "route_boundary_percent",
     "auto_boundary_max_distance_km",
@@ -54,6 +57,10 @@ SETTING_KEYS = {
     "topo_dir",
     "topo_dir_windows",
     "topo_dir_linux",
+    "city_dir",
+    "building_default_height",
+    "building_height_scale",
+    "water_depth",
     "dem_type",
     "api_key",
     "force",
@@ -95,6 +102,18 @@ class _ValleyThresholdAction(argparse.Action):
         )
 
 
+class _RouteBoundaryAction(argparse.Action):
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: Any,
+        option_string: str | None = None,
+    ) -> None:
+        setattr(namespace, self.dest, values)
+        namespace._route_boundary_cli_explicit = True
+
+
 def _reject_retired_settings(settings: dict[str, Any]) -> None:
     for name, guidance in RETIRED_SETTINGS.items():
         if name in settings:
@@ -118,7 +137,34 @@ def _nonnegative(value: str) -> float:
 def _route_boundary_percentage(value: str) -> RouteBoundaryPercent:
     if value == "auto":
         return "auto"
+    if "," in value:
+        parts = value.split(",")
+        if len(parts) != 4 or any(not part.strip() for part in parts):
+            raise argparse.ArgumentTypeError(
+                "must be 'auto', one nonnegative number, or four comma-separated "
+                "N,E,S,W percentages"
+            )
+        parsed = [_nonnegative(part.strip()) for part in parts]
+        return parsed[0], parsed[1], parsed[2], parsed[3]
     return _nonnegative(value)
+
+
+def _directional_route_boundary(
+    value: Any,
+) -> DirectionalRouteBoundary | None:
+    if not isinstance(value, (list, tuple)) or isinstance(value, (str, bytes)):
+        return None
+    if len(value) != 4:
+        return None
+    normalized: list[float] = []
+    for item in value:
+        if isinstance(item, bool) or not isinstance(item, (int, float)):
+            return None
+        number = float(item)
+        if not math.isfinite(number) or number < 0:
+            return None
+        normalized.append(number)
+    return normalized[0], normalized[1], normalized[2], normalized[3]
 
 
 def _valley_height_percentage(value: str) -> float:
@@ -201,6 +247,7 @@ def load_settings(path: Path | None) -> dict[str, Any]:
         "output",
         "topo_file",
         "topo_dir",
+        "city_dir",
         "font_file",
         "base_stl",
     ):
@@ -236,12 +283,36 @@ def create_parser(settings: dict[str, Any] | None = None) -> argparse.ArgumentPa
         type=Path,
         help="output file, or output directory for an activity directory input",
     )
-    parser.add_argument("--route-width", type=_positive, default=1.0, help="route width in mm")
+    parser.add_argument(
+        "--mode",
+        choices=("topo", "city"),
+        default="topo",
+        help="model mode: terrain route or terrain with buildings (default: topo)",
+    )
+    parser.add_argument(
+        "--route-width",
+        type=_positive,
+        default=None,
+        help="route width in mm (default: 0.5 in city mode; 1 otherwise)",
+    )
     parser.add_argument(
         "--route-height",
         type=_positive,
-        default=2.0,
-        help="route height above terrain in mm (topo mode)",
+        default=None,
+        help="route height above terrain in mm (default: 1.5 in city mode; 2 otherwise)",
+    )
+    parser.add_argument(
+        "--route-depth",
+        type=_positive,
+        default=None,
+        help="flush route inlay depth in mm (default: 1.5 in city mode; 0.6 otherwise)",
+    )
+    parser.add_argument(
+        "--road-snap-distance",
+        type=_nonnegative,
+        default=5.0,
+        help="maximum OSM road matching distance in source meters; 0 disables matching "
+        "(city mode; default: 5)",
     )
     parser.add_argument(
         "--topo",
@@ -251,9 +322,12 @@ def create_parser(settings: dict[str, Any] | None = None) -> argparse.ArgumentPa
     )
     parser.add_argument(
         "--route-boundary-percent",
+        action=_RouteBoundaryAction,
         type=_route_boundary_percentage,
         default=None,
-        help="route padding percent or auto mountain extent (default: auto with topo, 10 without)",
+        help="one route padding percent, N,E,S,W comma-separated percentages, "
+        "or auto mountain extent (default: 10,10,10,10 in city mode; "
+        "auto with topo; 10 without topo)",
     )
     parser.add_argument(
         "--auto-boundary-max-distance-km",
@@ -419,6 +493,29 @@ def create_parser(settings: dict[str, Any] | None = None) -> argparse.ArgumentPa
         type=Path,
         help="directory recursively containing local GeoTIFF tiles (default: ./asset)",
     )
+    parser.add_argument(
+        "--city-dir",
+        type=Path,
+        help="directory containing cached OSM city tiles (default: ./asset/city)",
+    )
+    parser.add_argument(
+        "--building-default-height",
+        type=_positive,
+        default=10.0,
+        help="fallback building height in source meters (city mode; default: 10)",
+    )
+    parser.add_argument(
+        "--building-height-scale",
+        type=_positive,
+        default=5.0,
+        help="building height multiplier after map scaling (city mode; default: 5)",
+    )
+    parser.add_argument(
+        "--water-depth",
+        type=_positive,
+        default=0.4,
+        help="flush water inlay depth in mm (city mode; default: 0.4)",
+    )
     parser.add_argument("--dem-type", help="OpenTopography DEM identifier")
     parser.add_argument("--api-key", help="OpenTopography API key")
     parser.add_argument(
@@ -429,6 +526,8 @@ def create_parser(settings: dict[str, Any] | None = None) -> argparse.ArgumentPa
     parser.set_defaults(**(settings or {}))
     parser.set_defaults(_route_boundary_explicit="route_boundary_percent" in (settings or {}))
     parser.set_defaults(
+        _route_boundary_cli_explicit=False,
+        _route_boundary_setting_value=(settings or {}).get("route_boundary_percent"),
         _valley_threshold_overrides=frozenset(),
         _valley_threshold_settings={
             name: value
@@ -439,11 +538,21 @@ def create_parser(settings: dict[str, Any] | None = None) -> argparse.ArgumentPa
     return parser
 
 
+def _resolve_route_dimensions(args: argparse.Namespace) -> None:
+    if args.route_width is None:
+        args.route_width = 0.5 if args.mode == "city" else 1.0
+    if args.route_height is None:
+        args.route_height = 1.5 if args.mode == "city" else 2.0
+    if args.route_depth is None:
+        args.route_depth = 1.5 if args.mode == "city" else 0.6
+
+
 def config_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser) -> Config:
     if args.gpx_file is None:
         parser.error(
             f"input_path is required as an argument or {SETTINGS_FILENAME} value"
         )
+    _resolve_route_dimensions(args)
     _validate_setting_types(args, parser)
     gpx_file = Path(args.gpx_file).resolve()
     if not gpx_file.is_file():
@@ -461,6 +570,7 @@ def config_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser) 
     api_key = args.api_key or os.environ.get("OPENTOPOGRAPHY_API_KEY")
     topo_file = Path(args.topo_file).resolve() if args.topo_file else None
     topo_dir = Path(args.topo_dir or "asset").resolve()
+    city_dir = Path(args.city_dir or Path("asset") / "city").resolve()
     font_file = Path(args.font_file).resolve() if args.font_file else None
     base_stl = Path(args.base_stl).resolve() if args.base_stl else None
     text = args.text
@@ -497,6 +607,20 @@ def config_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser) 
             parser.error(f"base STL does not exist or is not a file: {base_stl}")
         if base_stl.suffix.lower() != ".stl":
             parser.error("--base-stl must use the .stl extension")
+        if _directional_route_boundary(args.route_boundary_percent) is not None:
+            parser.error(
+                "directional --route-boundary-percent values are not supported "
+                "with --base-stl; use one symmetric percentage"
+            )
+    if args.mode == "city":
+        if not args.topo:
+            parser.error("--mode city requires topography; enable --topo")
+        if not args.use_3mf:
+            parser.error("--mode city requires 3MF output")
+        if base_stl is None and args.route_depth >= args.base_height:
+            parser.error("--route-depth must be smaller than --base-height in city mode")
+        if base_stl is None and args.water_depth >= args.base_height:
+            parser.error("--water-depth must be smaller than --base-height in city mode")
     if args.topo:
         if args.topo_source == "online":
             if topo_file is not None or args.topo_dir is not None:
@@ -543,17 +667,27 @@ def config_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser) 
                 "--route-width must be smaller than the available terrain width "
                 f"({available_route_width:g} mm)"
             )
+    directional_boundary = _directional_route_boundary(args.route_boundary_percent)
+    route_boundary = (
+        directional_boundary or args.route_boundary_percent
+        if args.route_boundary_percent is not None
+        else (
+            (10.0, 10.0, 10.0, 10.0)
+            if args.mode == "city" and base_stl is None
+            else 10.0 if args.mode == "city"
+            else "auto" if args.topo else 10.0
+        )
+    )
     return Config(
         gpx_file=gpx_file,
         output=output,
+        mode=args.mode,
         route_width=args.route_width,
         route_height=args.route_height,
+        route_depth=args.route_depth,
+        road_snap_distance=args.road_snap_distance,
         topo=args.topo,
-        route_boundary_percent=(
-            args.route_boundary_percent
-            if args.route_boundary_percent is not None
-            else "auto" if args.topo else 10.0
-        ),
+        route_boundary_percent=route_boundary,
         auto_boundary_max_distance_km=args.auto_boundary_max_distance_km,
         auto_valley_max_relief_m=args.auto_valley_max_relief_m,
         auto_valley_max_slope_percent=args.auto_valley_max_slope_percent,
@@ -581,6 +715,10 @@ def config_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser) 
         topo_source=args.topo_source,
         topo_file=topo_file,
         topo_dir=topo_dir,
+        city_dir=city_dir,
+        building_default_height=args.building_default_height,
+        building_height_scale=args.building_height_scale,
+        water_depth=args.water_depth,
         dem_type=args.dem_type,
         api_key=api_key,
         force=args.force,
@@ -594,6 +732,7 @@ def configs_from_args(
         parser.error(
             f"input_path is required as an argument or {SETTINGS_FILENAME} value"
         )
+    _resolve_route_dimensions(args)
     _validate_setting_types(args, parser)
     activity_input = Path(args.gpx_file).resolve()
     if not activity_input.exists():
@@ -663,6 +802,13 @@ def configs_from_args(
 def _validate_setting_types(
     args: argparse.Namespace, parser: argparse.ArgumentParser
 ) -> None:
+    if args._route_boundary_explicit and not args._route_boundary_cli_explicit:
+        configured_boundary = args._route_boundary_setting_value
+        if isinstance(configured_boundary, str) and configured_boundary != "auto":
+            parser.error(
+                "settings file value 'route_boundary_percent' must use a JSON "
+                "number, a four-number N,E,S,W array, or 'auto'"
+            )
     for name, value in args._valley_threshold_settings.items():
         if name not in args._valley_threshold_overrides and (
             isinstance(value, bool) or not isinstance(value, (int, float))
@@ -673,6 +819,7 @@ def _validate_setting_types(
         "output",
         "topo_file",
         "topo_dir",
+        "city_dir",
         "font_file",
         "base_stl",
     ):
@@ -682,6 +829,8 @@ def _validate_setting_types(
     numeric = (
         "route_width",
         "route_height",
+        "route_depth",
+        "road_snap_distance",
         "auto_boundary_max_distance_km",
         "auto_valley_max_relief_m",
         "auto_valley_max_slope_percent",
@@ -692,6 +841,9 @@ def _validate_setting_types(
         "text_depth",
         "max_size",
         "base_height",
+        "building_default_height",
+        "building_height_scale",
+        "water_depth",
     )
     for name in numeric:
         value = getattr(args, name)
@@ -705,12 +857,24 @@ def _validate_setting_types(
     boundary = args.route_boundary_percent
     if boundary is None:
         if args._route_boundary_explicit:
-            parser.error("settings file value 'route_boundary_percent' must be a number or 'auto'")
+            parser.error(
+                "settings file value 'route_boundary_percent' must be a number, "
+                "a four-number N,E,S,W array, or 'auto'"
+            )
     elif boundary == "auto":
         if not args.topo:
             parser.error("--route-boundary-percent auto requires topography; enable --topo or use a numeric percentage")
+    elif isinstance(boundary, (list, tuple)):
+        if _directional_route_boundary(boundary) is None:
+            parser.error(
+                "settings file value 'route_boundary_percent' must contain exactly "
+                "four finite nonnegative numbers in N,E,S,W order"
+            )
     elif isinstance(boundary, bool) or not isinstance(boundary, (int, float)):
-        parser.error("settings file value 'route_boundary_percent' must be a number or 'auto'")
+        parser.error(
+            "settings file value 'route_boundary_percent' must be a number, "
+            "a four-number N,E,S,W array, or 'auto'"
+        )
     elif not math.isfinite(boundary) or boundary < 0:
         parser.error("--route-boundary-percent must be a finite nonnegative number or auto")
     if args.auto_boundary_max_distance_km <= 0:
@@ -725,8 +889,14 @@ def _validate_setting_types(
             parser.error(f"--{name.replace('_', '-')} must be greater than or equal to zero")
     if args.auto_valley_max_height_percent > 100:
         parser.error("--auto-valley-max-height-percent must be less than or equal to 100")
-    if args.route_width <= 0 or args.route_height <= 0:
+    if args.route_width <= 0 or args.route_height <= 0 or args.route_depth <= 0:
         parser.error("route dimensions must be greater than zero")
+    if args.road_snap_distance < 0:
+        parser.error("--road-snap-distance must be greater than or equal to zero")
+    if args.building_default_height <= 0 or args.building_height_scale <= 0:
+        parser.error("building dimensions must be greater than zero")
+    if args.water_depth <= 0:
+        parser.error("--water-depth must be greater than zero")
     if args.text_height <= 0:
         parser.error("--text-height must be greater than zero")
     if args.text_depth <= 0:
@@ -772,6 +942,7 @@ def _validate_setting_types(
         "text_mode",
         "font_weight",
         "font_style",
+        "mode",
     ):
         if not isinstance(getattr(args, name), str):
             parser.error(f"settings file value '{name}' must be a string")
@@ -779,6 +950,8 @@ def _validate_setting_types(
         parser.error(
             "settings file value 'shape' must be 'square', 'circle', or 'hex'"
         )
+    if args.mode not in {"topo", "city"}:
+        parser.error("settings file value 'mode' must be 'topo' or 'city'")
     if args.text_align not in {"left", "center", "right"}:
         parser.error(
             "settings file value 'text_align' must be 'left', 'center', or 'right'"

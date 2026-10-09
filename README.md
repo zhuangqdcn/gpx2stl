@@ -5,6 +5,7 @@ Convert GPX tracks/routes and Garmin FIT activities into printable terrain model
 - **3MF by default:** separate named objects and materials for Bambu Studio. Filament 1 is the GPX route, filament 2 is topography, filament 3 is optional text, and filament 4 is the base.
 - **STL on request:** one watertight mesh containing the base, route, and all enabled features.
 - **Flexible topography:** use local GeoTIFF files first or download SRTMGL1/COP30 data from OpenTopography.
+- **Printable city mode:** add cached OpenStreetMap buildings, bridges, water bodies, conservative road matching, and flush route/water inlays to the terrain.
 - **File or folder input:** convert one `.gpx`/`.fit` file or every supported activity file directly in a folder; files remain separate models.
 - **Square, circular, or hexagonal base:** automatically sized around every path in each input activity.
 - **Custom STL base:** preserve an existing model and use its highest flat top as the exact terrain shape.
@@ -54,7 +55,9 @@ Copy `settings.example.json` beside your activity files as `.gpx2stl.settings.js
 cp settings.example.json /path/to/activities/.gpx2stl.settings.json
 ```
 
-JSON keys use the Python/long-option names with underscores, such as `route_width`, `route_boundary_percent`, `auto_boundary_max_distance_km`, `text_boundary_percent`, `text_align`, `text_mode`, `text_depth`, `font_family`, `font_size`, `font_weight`, `font_style`, `topo_source`, and `topo_dir`. The positional `.gpx`/`.fit` file-or-directory input can also be defaulted with the backward-compatible `gpx_file` key. Use `use_3mf` for the `--3mf` / `--no-3mf` setting. Relative `font_file` paths are resolved from the settings file like other paths. Unknown keys, invalid JSON, or incorrect value types produce an explicit error. `.gpx2stl.settings.json` is ignored by Git; `settings.example.json` is tracked as a complete template.
+JSON keys use the Python/long-option names with underscores, such as `mode`, `route_width`, `route_depth`, `road_snap_distance`, `route_boundary_percent`, `text_mode`, `topo_source`, `topo_dir`, `city_dir`, `building_default_height`, and `building_height_scale`. The positional `.gpx`/`.fit` file-or-directory input can also be defaulted with the backward-compatible `gpx_file` key. Use `use_3mf` for the `--3mf` / `--no-3mf` setting. Relative `font_file`, terrain, and city-cache paths are resolved from the settings file. Unknown keys, invalid JSON, or incorrect value types produce an explicit error. `.gpx2stl.settings.json` is ignored by Git; `settings.example.json` is tracked as a complete template.
+
+Directional route padding uses a JSON array in north, east, south, west order, for example `"route_boundary_percent": [10, 15, 10, 15]`. A scalar number retains symmetric padding, and `"auto"` retains DEM-based mountain discovery.
 
 `--boundary-percent` / `boundary_percent` and `--inner-size-percent` / `inner_size_percent` are retired and rejected with migration guidance. For generated bases, rename the old boundary setting to `route_boundary_percent` and replace the old inner-size setting with `text_boundary_percent = (100 - inner_size_percent) / 2`. Thus an inner size of 70 becomes a text boundary of 15. For custom STL bases with text, the old boundary value controlled the text inset: move it to `text_boundary_percent` and use `route_boundary_percent: 0` to preserve the previous maximum route fit. Without text, custom terrain now uses the full top; text boundary is ignored.
 
@@ -131,6 +134,15 @@ python -m gpx2stl route.gpx --shape circle --max-size 180
 # Flat-top hexagonal model
 python -m gpx2stl route.gpx --shape hex
 
+# City model with buildings, bridge decks, a flush route inlay, and road matching within 5 m
+python -m gpx2stl route.gpx --mode city
+
+# City model with 10% north/south and 20% east/west route padding
+python -m gpx2stl route.gpx --mode city --route-boundary-percent 10,20,10,20
+
+# Disable road matching while retaining buildings and the embedded route
+python -m gpx2stl route.gpx --mode city --road-snap-distance 0
+
 # Estimate all route-touched mountain extents, searching up to 30 km per side
 python -m gpx2stl route.gpx --route-boundary-percent auto --auto-boundary-max-distance-km 30
 
@@ -178,10 +190,13 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 | `input_path` | required | Input `.gpx`/`.fit` file or directory. A directory converts each directly contained supported file independently and non-recursively. |
 | `--settings` | discovered | Explicit settings file path. Overrides `.gpx2stl.settings.json` discovery. |
 | `-o`, `--output` | input stem | Output file path for a file input, or an existing output directory for a directory input. |
-| `--route-width` | `1` mm | Printed route ribbon width. |
-| `--route-height` | `2` mm | Route height above terrain in topo mode. |
+| `--mode` | `topo` | `topo` preserves the terrain-route model; `city` adds OSM buildings, road matching, and a flush route inlay. City mode requires topo and 3MF. |
+| `--route-width` | city: `0.5` mm; otherwise: `1` mm | Printed route ribbon width. |
+| `--route-height` | city: `1.5` mm; otherwise: `2` mm | Route height above terrain in topo mode. City routes remain flush and use `--route-depth`. |
+| `--route-depth` | city: `1.5` mm; otherwise: `0.6` mm | Flush route inlay/cavity depth in city mode; must be smaller than the base height. |
+| `--road-snap-distance` | `5` m | Maximum source-meter distance for conservative OSM road matching in city mode. Set to `0` to preserve the original activity geometry. |
 | `--topo`, `--no-topo` | topo | Enable or disable terrain. |
-| `--route-boundary-percent` | `auto` with topo; `10` without | A finite nonnegative padding percentage, or the exact string `auto` for DEM-based mountain discovery. Independent of the text band; explicit `auto` requires topo. |
+| `--route-boundary-percent` | city generated base: `10,10,10,10`; city custom base: `10`; topo: `auto`; no topo: `10` | One finite nonnegative symmetric percentage, four comma-separated `N,E,S,W` percentages, or `auto` for DEM-based mountain discovery. Settings use a four-number JSON array. Explicit `auto` requires topo; directional values require a generated base. |
 | `--auto-boundary-max-distance-km` | `10` km | Finite positive maximum discovery distance beyond each side of the route bounding box in automatic mode. |
 | `--auto-valley-max-relief-m` | `1000` m | Maximum smoothed elevation variation across the approximately 900 m valley neighborhood. Increase to admit uneven valley floors. |
 | `--auto-valley-max-slope-percent` | `100` % | Maximum smoothed valley-floor slope as a percentage grade (`2` means 2%, not 200%). |
@@ -209,6 +224,10 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 | `--topo-source` | `auto` | `auto` uses complete local coverage first, `online` uses OpenTopography, and `local` disables network fallback. |
 | `--topo-file` | none | One local GeoTIFF in any valid CRS; takes precedence over `--topo-dir`. |
 | `--topo-dir` | `./asset` | Directory recursively scanned for `.tif` and `.tiff` tiles. |
+| `--city-dir` | `./asset/city` | Persistent cache for fixed-grid Overpass JSON tiles. Existing nonempty tiles are reused indefinitely; delete them explicitly to refresh OSM data. |
+| `--building-default-height` | `10` m | Building height when OSM has neither a valid `height` nor `building:levels` value. |
+| `--building-height-scale` | `5` | Multiplier applied after building and bridge height is converted with the model's horizontal map scale. Use `1` for true scale. |
+| `--water-depth` | `0.4` mm | Depth of the flush water cavity/inlay in city mode; must be smaller than the base or custom-base thickness. |
 | `--dem-type` | automatic | OpenTopography DEM identifier override. |
 | `--api-key` | environment | OpenTopography API key override. |
 | `--force` | off | Replace an existing output file. |
@@ -220,7 +239,11 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 - By default, terrain elevations use the same scale as X/Y: the horizontal ratio derived from `--max-size` is applied to the DEM elevation range. For example, a horizontal scale of 1:20,000 also makes 1,000 m of elevation equal 50 mm.
 - Setting `--terrain-height` explicitly overrides true-scale relief and normalizes the DEM minimum-to-maximum range to that many millimeters.
 - Without topo, GPX or FIT altitude controls the route top at physical 1:20,000 vertical scale: 1,000 m becomes 50 mm. Internal missing elevations are interpolated; missing endpoint/all elevations are errors.
+- In city mode, route points are matched only to connected OSM road geometry within `--road-snap-distance`; implausible, disconnected, or out-of-range spans retain their GPX geometry. If matching would leave the printable footprint, the original route is used. Buildings that overlap an unmatched route remain complete and hide that route section.
+- City buildings use OSM `height`, then `building:levels × 3 m`, then `--building-default-height`. Bridge-tagged ways become printable decks using OSM width, lane-derived width, or a road/rail fallback. Heights use the horizontal model scale and `--building-height-scale`; roofs and bridge decks are flat. The default `5×` vertical multiplier keeps short structures visible on city-scale models; use `1` for true scale. The route is a separate 3MF object filling a matching terrain/base cavity with its top flush to the terrain.
+- City water includes OSM lakes, ponds, reservoirs, basins, riverbanks, width-tagged or inferred rivers/streams/canals, and the sea-facing side of directed coastlines. It is clipped to the printable terrain and exported as a separate flush `Water` inlay; `--water-depth` controls its cavity depth. The route takes material priority where it crosses water.
 - In numeric boundary mode, square output is the smallest north-up square around the route before padding. Circle output uses the true minimum enclosing circle. Hex output uses the minimum translated flat-top regular hexagon. Automatic mode fits the eight-direction geographic selection polygon together with the route.
+- Four-value padding expands the route bounding box independently: N/S percentages use its north-south span, while E/W percentages use its east-west span. The selected square, circle, or hex is then fitted around the padded rectangle. City mode defaults to `10,10,10,10`; a degenerate axis receives no percentage padding on that axis, but printable route-width clearance still applies.
 - When `--text` is present, `--max-size` controls the outer square, circle, or hex frame. The centered terrain circle has diameter `max_size × (1 - 2 × text_boundary_percent / 100)`; the rest of the frame stays flat at the base-top height. The default 7% text boundary retains an 86% terrain diameter. Hex frames need more than approximately 6.7% to leave a text band at their narrower sides; glyphs and margins may require more.
 - A numeric `--route-boundary-percent` pads the minimum route footprint before fitting it into the terrain: square side length is multiplied by `1 + 2 × route_boundary_percent / 100`, while circle/hex radius is multiplied by `1 + route_boundary_percent / 100`. Route-width clearance is added separately. Changing route boundary does not resize the text band. Without text, text boundary is ignored and the full generated footprint is available.
 - In 3MF output, the generated prism or supplied custom STL remains a separate `Base` object. Enabled relief is a separately watertight `Topography` object with a small intentional overlap into the base for reliable slicing. Disabling topo omits that object.
@@ -279,7 +302,7 @@ Equivalent JSON entries:
 
 These are exploratory values, not a universal preset or guaranteed solution. Discovery logs print the active thresholds. Loosening them can misclassify gentle foothills as valleys, crop mountain slopes, or change the selected regions; boundaries still need independent directional stability, and unresolved directions still use the existing 100% fallback. The floor is window-relative, not a local drainage/saddle detector: threshold tuning does not guarantee recognition of every visible valley. DEM coverage/resolution and resource checks remain strict.
 
-Omitting the route boundary selects `auto` with topography and numeric `10` without it. Explicit `auto` with `--no-topo` is an error, including when `auto` comes from settings. Override it with `--no-topo --route-boundary-percent 10`. There is no separate automatic-boundary boolean, new fallback setting, or settings migration. Numeric boundary behavior and the independent text boundary are unchanged. The tracked settings example explicitly selects `auto` and keeps the text boundary at 15%.
+Omitting the route boundary selects directional `10,10,10,10` in city mode, `auto` in topo mode, and numeric `10` without topography. Explicit `auto` with `--no-topo` is an error, including when `auto` comes from settings. Override it with `--no-topo --route-boundary-percent 10`. There is no separate automatic-boundary boolean. Scalar numeric behavior and the independent text boundary are unchanged. The tracked settings template retains `"auto"` for its default topo profile; use the documented four-number JSON array for a city profile.
 
 ### Custom STL bases
 
@@ -294,6 +317,8 @@ offset distance = text-boundary-percent / 100 × min(top width, top height)
 ```
 
 Without text, there is no text inset and terrain uses the full top. The GPX remains north-up. In numeric mode it is centered on the usable terrain; its maximum fitting scale reserves half the route width at the edges, then is divided by `1 + route_boundary_percent / 100` to add independent route padding. In automatic mode the entire eight-direction selection polygon and route ribbon are fitted together, recentering the geography and reducing scale as necessary. Containment is checked; incompatible concave edges or holes produce an explicit error rather than clipping the selection polygon or route. Changing route boundary leaves the terrain region and text band unchanged. The custom STL itself is never resized by `--max-size`. Final DEM bounds are derived from the terrain region.
+
+Custom STL fitting supports city mode. OSM buildings, roads, bridges, and water are clipped to the exact inset custom top; terrain/buildings follow that surface, and the flush route and water cavities are cut into the custom base. Route and water depths must be smaller than the custom base thickness. Custom fitting supports a scalar symmetric percentage or `auto`; four directional values are rejected because the custom top has its own arbitrary outline. An omitted city boundary therefore defaults to scalar `10` for custom bases.
 
 When `--text` is supplied, the largest fitting glyph height is selected unless `--font-size` is set. The compact run stays tangent to the continuous perimeter and follows `--text-align`. The head/tail seam remains centered at the bottom and reserves eight font spaces plus `--text-end-gap` and any quoted leading/trailing spaces. `--text-margin` reserves the requested minimum clearance in millimeters from both the outer shape boundary and the inner terrain boundary. Every glyph must fit entirely in the remaining area. Increase `--text-boundary-percent`, reduce the font size, margins, or gap, shorten the text, or choose a narrower font if the border cannot contain it.
 
@@ -322,8 +347,10 @@ Import the generated 3MF as one object with multiple parts if prompted. The mode
 2. `Topography` / `Filament 2 - Topography` when topo is enabled
 3. `Text` / `Filament 3 - Text` when `--text` is supplied
 4. `Base` / `Filament 4 - Base`
+5. `Buildings` / `Filament 5 - Buildings` in city mode
+6. `Water` / `Filament 6 - Water` when city water geometry is present
 
-With topo and text enabled, the 3MF therefore contains four objects. Without either optional feature, its object is omitted. The four fixed material slots remain available so the base consistently maps to filament 4. Confirm or remap the parts to the desired AMS/filament slots before slicing.
+Topo mode retains four material slots so the base consistently maps to filament 4. City mode adds the fifth building material and, when present, the sixth water material. Optional geometry is omitted when absent. Confirm or remap the parts to the desired AMS/filament slots before slicing.
 
 ## Development
 
@@ -337,7 +364,7 @@ Tests use synthetic GPX and GeoTIFF data and do not require network access or a 
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE). Terrain datasets remain subject to their respective licenses and attribution requirements.
+This project is licensed under the [MIT License](LICENSE). Terrain datasets remain subject to their respective licenses and attribution requirements. City data is © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright) and is available under the ODbL; exported models that use it must retain the required attribution.
 
 ---
 
@@ -348,6 +375,7 @@ This project is licensed under the [MIT License](LICENSE). Terrain datasets rema
 - **默认输出 3MF：**包含可导入 Bambu Studio 的独立命名对象和材料。耗材 1 用于 GPX 路线，耗材 2 用于地形，耗材 3 用于可选文字，耗材 4 用于底座。
 - **可选输出 STL：**底座、路线和所有启用的功能合并为一个水密网格。
 - **灵活的真实地形：**优先使用本地 GeoTIFF，或通过 OpenTopography 下载 SRTMGL1/COP30 高程数据。
+- **可打印城市模式：**在地形上加入缓存的 OpenStreetMap 建筑、桥梁、水体、保守道路匹配以及齐平路线/水体嵌件。
 - **文件或目录输入：**可转换一个 `.gpx`/`.fit` 文件，或目录中直接包含的所有受支持活动文件；不同文件始终生成独立模型。
 - **方形、圆形或六边形底座：**根据每个输入活动中的全部路径自动确定范围。
 - **自定义 STL 底座：**保留现有模型，并将其最高的平坦顶面作为精确地形外形。
@@ -395,7 +423,9 @@ OPENTOPOGRAPHY_API_KEY=你的API密钥
 cp settings.example.json /path/to/activities/.gpx2stl.settings.json
 ```
 
-JSON 键使用 Python/长参数对应的下划线名称，例如 `route_width`、`route_boundary_percent`、`auto_boundary_max_distance_km`、`text_boundary_percent`、`text_margin`、`text_end_gap`、`topo_source` 和 `topo_dir`。也可用向后兼容的 `gpx_file` 键设置默认 `.gpx`/`.fit` 文件或目录；`--3mf` / `--no-3mf` 对应 `use_3mf`。相对 `font_file` 路径与其他路径一样，以设置文件所在目录为基准解析。未知键、无效 JSON 或错误的数据类型都会产生明确错误。`.gpx2stl.settings.json` 已被 Git 忽略，而完整模板 `settings.example.json` 会纳入版本控制。
+JSON 键使用 Python/长参数对应的下划线名称，例如 `mode`、`route_width`、`route_depth`、`road_snap_distance`、`route_boundary_percent`、`topo_source`、`topo_dir`、`city_dir`、`building_default_height` 和 `building_height_scale`。也可用向后兼容的 `gpx_file` 键设置默认 `.gpx`/`.fit` 文件或目录；`--3mf` / `--no-3mf` 对应 `use_3mf`。相对字体、地形和城市缓存路径都以设置文件所在目录为基准解析。未知键、无效 JSON 或错误的数据类型都会产生明确错误。`.gpx2stl.settings.json` 已被 Git 忽略，而完整模板 `settings.example.json` 会纳入版本控制。
+
+四方向路线边界在 JSON 中按北、东、南、西顺序使用数组，例如 `"route_boundary_percent": [10, 15, 10, 15]`。单个数值仍表示对称边界，`"auto"` 仍表示基于 DEM 的山体搜索。
 
 `--boundary-percent` / `boundary_percent` 和 `--inner-size-percent` / `inner_size_percent` 已停用，使用时会报错并提示迁移方法。生成底座时，将旧边界键改为 `route_boundary_percent`，并按 `text_boundary_percent = (100 - inner_size_percent) / 2` 换算旧内圈尺寸；例如 70 对应文字边界 15。带文字的自定义 STL 底座中，旧边界值控制文字内缩，应移至 `text_boundary_percent`，并设置 `route_boundary_percent: 0` 以保留原来的最大路线缩放。无文字时，自定义地形现在使用完整顶面，文字边界被忽略。
 
@@ -472,6 +502,15 @@ python -m gpx2stl route.gpx --shape circle --max-size 180
 # 平顶正六边形模型
 python -m gpx2stl route.gpx --shape hex
 
+# 带建筑、齐平路线嵌件和默认 5 米道路匹配的城市模型
+python -m gpx2stl route.gpx --mode city
+
+# 北/南各 10%、东/西各 20% 路线边界的城市模型
+python -m gpx2stl route.gpx --mode city --route-boundary-percent 10,20,10,20
+
+# 保留原始活动路线，不进行道路匹配
+python -m gpx2stl route.gpx --mode city --road-snap-distance 0
+
 # 估算路线涉及的所有山体范围，每侧最多向外搜索 30 km
 python -m gpx2stl route.gpx --route-boundary-percent auto --auto-boundary-max-distance-km 30
 
@@ -519,10 +558,12 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 | `input_path` | 必填 | 输入 `.gpx`/`.fit` 文件或目录；目录中直接包含的每个受支持文件会被独立、非递归地转换。 |
 | `--settings` | 自动查找 | 显式指定设置文件路径，并覆盖 `.gpx2stl.settings.json` 自动查找。 |
 | `-o`, `--output` | 输入文件名 | 文件输入时为输出文件路径；目录输入时为已存在的输出目录。 |
-| `--route-width` | `1` mm | 打印路线带宽度。 |
-| `--route-height` | `2` mm | 启用地形时路线高出地形的高度。 |
+| `--route-width` | 城市：`0.5` mm；其他：`1` mm | 打印路线带宽度。 |
+| `--route-height` | 城市：`1.5` mm；其他：`2` mm | 地形模式中路线高出地形的高度；城市路线保持齐平并使用 `--route-depth`。 |
+| `--route-depth` | 城市：`1.5` mm；其他：`0.6` mm | 城市模式中齐平路线嵌件及凹槽的深度，必须小于底座厚度。 |
+| `--water-depth` | `0.4` mm | 城市模式中齐平水体嵌件及凹槽的深度，必须小于生成或自定义底座厚度。 |
 | `--topo`, `--no-topo` | 启用 | 启用或禁用地形。 |
-| `--route-boundary-percent` | 有地形时 `auto`；无地形时 `10` | 有限非负边界百分比，或精确字符串 `auto`（基于 DEM 搜索山体）；与文字带独立，显式 `auto` 必须启用地形。 |
+| `--route-boundary-percent` | 城市生成底座：`10,10,10,10`；城市自定义底座：`10`；地形：`auto`；无地形：`10` | 一个有限非负对称百分比、按 `北,东,南,西` 排列的四个逗号分隔百分比，或基于 DEM 搜索山体的 `auto`。设置文件使用四数字 JSON 数组。显式 `auto` 必须启用地形；四方向值仅支持生成底座。 |
 | `--auto-boundary-max-distance-km` | `10` km | 自动模式下，从路线包围盒每侧向外搜索的最大距离，必须为有限正数。 |
 | `--auto-valley-max-relief-m` | `1000` m | 约 900 m 谷底邻域内平滑高程的最大变化；增大可接受不平整谷底。 |
 | `--auto-valley-max-slope-percent` | `100` % | 平滑谷底的最大坡度百分比（`2` 表示 2%，不是 200%）。 |
@@ -561,7 +602,10 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 - 默认情况下，地形高程与 X/Y 使用相同比例：由 `--max-size` 得出的水平缩放比例也应用于 DEM 高程范围。例如，水平比例为 1:20,000 时，1,000 m 高程同样对应 50 mm。
 - 显式设置 `--terrain-height` 会覆盖真实比例，将 DEM 最低点到最高点的高度差归一化到指定毫米数。
 - 禁用地形时，路线顶部采用 GPX 或 FIT 高程和真实的 1:20,000 垂直比例：1,000 m 对应 50 mm。内部缺失高程会插值；端点或全部高程缺失会报错。
+- 城市模式会把带 OSM `bridge` 标记的道路、铁路和桥梁外形生成为可打印桥面。建筑和桥梁高度在水平地图比例之后默认放大 5 倍，以免较矮结构在城市尺度模型中消失；将 `building_height_scale` 设为 `1` 可恢复真实比例。
+- 城市水体包括 OSM 湖泊、池塘、水库、流域、河岸，按标注或推断宽度生成的河流/溪流/运河，以及有向海岸线的临海一侧。水体会裁剪到可打印地形，并作为独立且表面齐平的 `Water` 嵌件输出；路线穿过水面时路线材料优先。
 - 数值边界模式下，方形为加边界前包围路线的最小正北方形；圆形为真实最小包围圆；六边形为可平移的最小平顶正六边形。自动模式同时适配八方向地理选择多边形与路线。
+- 四方向边界先独立扩大路线包围盒：北/南百分比以南北跨度为基准，东/西百分比以东西跨度为基准，再围绕该矩形适配方形、圆形或六边形。城市模式默认 `10,10,10,10`。某轴跨度为零时，该轴百分比不会增加距离，但仍会预留可打印路线宽度。
 - 指定 `--text` 后，`--max-size` 控制方形、圆形或六边形外框尺寸。居中地形圆的直径为 `max_size × (1 - 2 × text_boundary_percent / 100)`，其余外框保持在底座顶面的平坦高度。默认文字边界 7% 保留 86% 地形直径。六边形需要大于约 6.7% 才能在较窄两侧留出文字带；字形及边距可能需要更多空间。
 - 数值 `--route-boundary-percent` 在缩放前给最小路线外形增加边界：方形边长乘以 `1 + 2 × route_boundary_percent / 100`，圆形或六边形半径乘以 `1 + route_boundary_percent / 100`，路线宽度另行预留。改变路线边界不会改变文字带。无文字时忽略文字边界，使用完整生成外形。
 - 在 3MF 输出中，生成的棱柱或提供的自定义 STL 会保留为独立的 `Base` 对象。启用的起伏地形是另一个独立水密的 `Topography` 对象，并略微伸入底座以确保切片可靠。禁用地形时不会生成该对象。
@@ -619,7 +663,7 @@ python -m gpx2stl route.gpx --route-boundary-percent auto --auto-valley-max-reli
 
 这些数值仅用于试验，不是通用预设，也不保证识别成功。日志会打印当前阈值。放宽条件可能把缓坡山麓误认为谷底、裁剪山坡或改变所选区域；边界仍必须通过独立方向稳定性检查，未确定方向仍使用现有的 100% 回退。高程基准依赖整个窗口，并非局部水系或鞍部检测，因此调参不能保证识别所有可见山谷。DEM 覆盖、分辨率及资源检查保持严格。
 
-省略路线边界时，启用地形默认使用 `auto`，禁用地形默认使用数值 `10`。显式 `auto` 与 `--no-topo` 同时使用会报错，包括设置文件中的 `auto`；此时用 `--no-topo --route-boundary-percent 10` 覆盖。没有单独的自动边界布尔开关，无新增回退设置，也无需迁移设置。数值边界行为和独立文字边界保持不变。纳入版本控制的设置示例显式启用 `auto`，文字边界仍为 15%。
+省略路线边界时，城市模式默认使用四方向 `10,10,10,10`，普通地形模式默认使用 `auto`，禁用地形默认使用数值 `10`。显式 `auto` 与 `--no-topo` 同时使用会报错，包括设置文件中的 `auto`；此时用 `--no-topo --route-boundary-percent 10` 覆盖。没有单独的自动边界布尔开关。标量数值边界行为和独立文字边界保持不变。纳入版本控制的设置模板为默认地形配置保留 `"auto"`；城市配置可使用上文的四数字 JSON 数组。
 
 ### 自定义 STL 底座
 
@@ -634,6 +678,8 @@ python -m gpx2stl route.gpx --route-boundary-percent auto --auto-valley-max-reli
 ```
 
 无文字时不进行文字内缩，地形使用完整顶面。GPX 保持正北朝上。数值模式以可用地形区域为中心，先求出在边缘预留半个路线宽度后的最大缩放，再除以 `1 + route_boundary_percent / 100`，以添加独立的路线边界。自动模式将完整八方向选择多边形与路线带一起适配，按需重新定位地理中心并缩小比例。程序检查完整包含关系；与凹边或孔洞冲突时会明确报错，不会裁切选择多边形或路线。改变路线边界不会改变地形区域或文字带。自定义 STL 本身绝不会被 `--max-size` 缩放。最终 DEM 请求范围根据地形区域计算。
+
+自定义 STL 支持城市模式。OSM 建筑、道路、桥梁和水体会裁剪到精确的内缩自定义顶面；地形和建筑贴合该表面，齐平路线及水体凹槽直接切入自定义底座。路线及水体深度必须小于自定义底座厚度。自定义适配支持单个对称百分比或 `auto`；由于自定义顶面可以是任意外形，四方向百分比会被明确拒绝。因此城市模式配合自定义底座且省略边界时默认使用标量 `10`。
 
 指定 `--text` 后，除非设置 `--font-size`，程序会选择可容纳的最大字高。紧凑文字段与连续边框路径相切，并遵循 `--text-align`。文字首尾接缝固定在底部中央，并保留八个字体空格、`--text-end-gap` 以及引号内首尾空格的总间距。`--text-margin` 可指定文字与外侧形状边界及内侧地形边界之间的最小毫米间距。每个字形都必须完整位于剩余区域内。如果空间不足，请增大 `--text-boundary-percent`，减小字高、文字边距或接缝，缩短文字或选择更窄的字体。
 
@@ -662,8 +708,10 @@ OpenTopography 要求 API Key，并有请求范围和频率限制。API、认证
 2. 启用地形时包含 `Topography` / `Filament 2 - Topography`
 3. 指定 `--text` 时包含 `Text` / `Filament 3 - Text`
 4. `Base` / `Filament 4 - Base`
+5. 城市模式包含 `Buildings` / `Filament 5 - Buildings`
+6. 城市模式存在水体时包含 `Water` / `Filament 6 - Water`
 
-同时启用地形和文字时，3MF 共包含四个对象。未启用地形或文字时，对应对象会被省略。四个固定材料槽位仍会保留，因此底座始终映射到耗材 4。切片前请确认各部件分别映射到正确的 AMS/耗材槽位。
+地形模式保留四个材料槽位，因此底座始终映射到耗材 4；城市模式增加第五个建筑材料，并在存在水体时增加第六个水体材料。没有实际几何体的可选对象会被省略。切片前请确认各部件分别映射到正确的 AMS/耗材槽位。
 
 ## 开发与测试
 
@@ -677,4 +725,4 @@ python -m pytest
 
 ## 许可证
 
-本项目采用 [MIT License](LICENSE)。地形数据集仍受其各自的许可证与署名要求约束。
+本项目采用 [MIT License](LICENSE)。地形数据集仍受其各自的许可证与署名要求约束。城市数据 © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright)，按 ODbL 提供；发布使用这些数据的模型时必须保留相应署名。

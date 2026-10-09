@@ -11,7 +11,6 @@ import numpy as np
 import shapely
 import trimesh
 from matplotlib import font_manager
-from matplotlib import tri as matplotlib_tri
 from matplotlib.font_manager import FontProperties
 from matplotlib.ft2font import FT2Font
 from matplotlib.textpath import TextPath, TextToPath
@@ -22,6 +21,7 @@ from shapely import affinity
 from shapely.geometry import LineString, MultiPolygon, Point, Polygon
 
 from gpx2stl.custom_base import CustomBase
+from gpx2stl.city import CityBuilding
 from gpx2stl.dem import DemSource, fill_missing
 from gpx2stl.errors import Gpx2StlError
 from gpx2stl.models import Config, Footprint, ModelTransform, ProjectedRoute
@@ -35,6 +35,8 @@ class Geometry:
     route: trimesh.Trimesh
     topography: trimesh.Trimesh | None = None
     text: trimesh.Trimesh | None = None
+    buildings: trimesh.Trimesh | None = None
+    water: trimesh.Trimesh | None = None
 
 
 @dataclass(frozen=True)
@@ -92,20 +94,40 @@ def _triangulated_surface_sampler(
     heights: NDArray[np.float64],
     faces: list[tuple[int, int, int]],
 ) -> HeightFunction:
-    triangulation = matplotlib_tri.Triangulation(
-        points[:, 0],
-        points[:, 1],
-        triangles=np.asarray(faces, dtype=np.int64),
-    )
-    linear = matplotlib_tri.LinearTriInterpolator(triangulation, heights)
+    face_array = np.asarray(faces, dtype=np.int64)
+    triangles = points[face_array]
+    triangle_heights = heights[face_array]
+    tree = shapely.STRtree(shapely.polygons(triangles))
     nearest = NearestNDInterpolator(points, heights)
 
     def sample(query: NDArray[np.float64]) -> NDArray[np.float64]:
-        interpolated = linear(query[:, 0], query[:, 1])
-        result = np.asarray(
-            np.ma.filled(interpolated, np.nan),
-            dtype=np.float64,
-        )
+        result = np.full(len(query), np.nan, dtype=np.float64)
+        matches = tree.query(shapely.points(query), predicate="intersects")
+        if matches.shape[1] > 0:
+            query_indices, first_matches = np.unique(
+                matches[0], return_index=True
+            )
+            triangle_indices = matches[1, first_matches]
+            selected = triangles[triangle_indices]
+            selected_heights = triangle_heights[triangle_indices]
+            x = query[query_indices, 0]
+            y = query[query_indices, 1]
+            x0, y0 = selected[:, 0, 0], selected[:, 0, 1]
+            x1, y1 = selected[:, 1, 0], selected[:, 1, 1]
+            x2, y2 = selected[:, 2, 0], selected[:, 2, 1]
+            denominator = (y1 - y2) * (x0 - x2) + (x2 - x1) * (y0 - y2)
+            first_weight = (
+                (y1 - y2) * (x - x2) + (x2 - x1) * (y - y2)
+            ) / denominator
+            second_weight = (
+                (y2 - y0) * (x - x2) + (x0 - x2) * (y - y2)
+            ) / denominator
+            third_weight = 1.0 - first_weight - second_weight
+            result[query_indices] = (
+                first_weight * selected_heights[:, 0]
+                + second_weight * selected_heights[:, 1]
+                + third_weight * selected_heights[:, 2]
+            )
         missing = ~np.isfinite(result)
         if np.any(missing):
             result[missing] = np.asarray(nearest(query[missing]), dtype=np.float64)
@@ -980,6 +1002,7 @@ def _route_mesh(
     base_height: float | None = None,
     clamp_bottom_to_zero: bool = True,
     overlap_depth: float = 0.05,
+    city_cavity_top: float | None = None,
 ) -> trimesh.Trimesh:
     components: list[trimesh.Trimesh] = []
     route_base_height = config.base_height if base_height is None else base_height
@@ -1002,7 +1025,14 @@ def _route_mesh(
             continue
         cumulative = np.concatenate(([0.0], np.cumsum(np.linalg.norm(np.diff(path, axis=0), axis=1))))
 
-        if config.topo:
+        if config.mode == "city":
+
+            def top_height(points: NDArray[np.float64]) -> NDArray[np.float64]:
+                if city_cavity_top is not None:
+                    return np.full(len(points), city_cavity_top, dtype=np.float64)
+                return surface_height(points)
+
+        elif config.topo:
 
             def top_height(points: NDArray[np.float64]) -> NDArray[np.float64]:
                 return surface_height(points) + config.route_height
@@ -1018,6 +1048,9 @@ def _route_mesh(
             )
 
         def bottom_height(points: NDArray[np.float64]) -> NDArray[np.float64]:
+            if config.mode == "city":
+                bottom = surface_height(points) - config.route_depth
+                return np.maximum(0.0, bottom) if clamp_bottom_to_zero else bottom
             if config.topo:
                 bottom = surface_height(points) - overlap_depth
                 return np.maximum(0.0, bottom) if clamp_bottom_to_zero else bottom
@@ -1033,6 +1066,120 @@ def _route_mesh(
     route_mesh = trimesh.util.concatenate(components)
     route_mesh.remove_unreferenced_vertices()
     return route_mesh
+
+
+def _subtract_route_cavity(
+    target: trimesh.Trimesh,
+    cavity: trimesh.Trimesh,
+    description: str,
+) -> trimesh.Trimesh:
+    if (
+        cavity.bounds[0, 2] >= target.bounds[1, 2]
+        or cavity.bounds[1, 2] <= target.bounds[0, 2]
+    ):
+        return target
+    try:
+        result = trimesh.boolean.difference(
+            [target, cavity],
+            engine="manifold",
+            check_volume=True,
+        )
+    except Exception as exc:
+        raise Gpx2StlError(
+            f"Unable to cut the embedded route cavity from {description}: {exc}"
+        ) from exc
+    if not isinstance(result, trimesh.Trimesh) or result.is_empty:
+        raise Gpx2StlError(
+            f"Unable to cut the embedded route cavity from {description}."
+        )
+    result.remove_unreferenced_vertices()
+    return result
+
+
+def _building_mesh(
+    buildings: tuple[CityBuilding, ...],
+    transform: ModelTransform,
+    surface_height: HeightFunction,
+    config: Config,
+) -> trimesh.Trimesh | None:
+    components: list[trimesh.Trimesh] = []
+    for building in buildings:
+        projected_polygon = building.polygon
+        height_m = building.height_m
+        model_geometry = shapely.orient_polygons(
+            shapely.transform(projected_polygon, transform.to_model),
+            exterior_cw=True,
+        )
+        model_height = height_m * transform.scale * config.building_height_scale
+        for polygon in _polygon_parts(model_geometry):
+            if polygon.is_empty or polygon.area <= 1e-9:
+                continue
+            boundary_points = np.asarray(
+                [
+                    (float(x), float(y))
+                    for ring in (polygon.exterior, *polygon.interiors)
+                    for x, y in list(ring.coords)[:-1]
+                ],
+                dtype=np.float64,
+            )
+            terrain_heights = surface_height(boundary_points)
+            top_z = float(np.max(terrain_heights)) + model_height
+
+            def bottom_height(points: NDArray[np.float64]) -> NDArray[np.float64]:
+                return surface_height(points) - 0.05
+
+            def top_height(points: NDArray[np.float64]) -> NDArray[np.float64]:
+                return np.full(len(points), top_z, dtype=np.float64)
+
+            components.append(
+                _variable_extrusion(polygon, bottom_height, top_height)
+            )
+    if not components:
+        return None
+    result = trimesh.util.concatenate(components)
+    result.remove_unreferenced_vertices()
+    return result
+
+
+def _water_mesh(
+    water: tuple[Polygon, ...],
+    transform: ModelTransform,
+    surface_height: HeightFunction,
+    depth: float,
+    cavity_top: float | None = None,
+) -> trimesh.Trimesh | None:
+    if not water:
+        return None
+    model_water = shapely.unary_union(
+        [
+            shapely.transform(polygon, transform.to_model)
+            for polygon in water
+        ]
+    )
+    if model_water.is_empty:
+        return None
+    model_water = shapely.orient_polygons(model_water, exterior_cw=True)
+    components: list[trimesh.Trimesh] = []
+    for polygon in _polygon_parts(model_water):
+        if polygon.is_empty or polygon.area <= 1e-9:
+            continue
+
+        def bottom_height(points: NDArray[np.float64]) -> NDArray[np.float64]:
+            return np.maximum(0.0, surface_height(points) - depth)
+
+        def top_height(points: NDArray[np.float64]) -> NDArray[np.float64]:
+            if cavity_top is not None:
+                return np.full(len(points), cavity_top, dtype=np.float64)
+            return surface_height(points)
+
+        components.append(
+            _variable_extrusion(polygon, bottom_height, top_height)
+        )
+    if not components:
+        return None
+    result = trimesh.util.concatenate(components)
+    result.remove_unreferenced_vertices()
+    return result
 
 
 def _no_topo_route_height(
@@ -1056,9 +1203,22 @@ def build_geometry(
     config: Config,
     dem: DemSource | None,
     custom_base: CustomBase | None = None,
+    buildings: tuple[CityBuilding, ...] = (),
+    water: tuple[Polygon, ...] = (),
 ) -> Geometry:
     raw_height = None if dem is None else _raw_height_function(dem, route, transform)
     if custom_base is not None:
+        custom_thickness = (
+            custom_base.top_z - float(custom_base.mesh.bounds[0, 2])
+        )
+        if config.mode == "city" and config.route_depth >= custom_thickness:
+            raise Gpx2StlError(
+                "--route-depth must be smaller than the custom base thickness."
+            )
+        if config.mode == "city" and config.water_depth >= custom_thickness:
+            raise Gpx2StlError(
+                "--water-depth must be smaller than the custom base thickness."
+            )
         base = custom_base.mesh.copy()
         if config.topo:
             topography, surface = _custom_terrain(custom_base, raw_height, config)
@@ -1136,11 +1296,64 @@ def build_geometry(
         custom_base is None,
         custom_base.overlap_depth if custom_base is not None else 0.05,
     )
+    water_mesh = None
+    if config.mode == "city":
+        cavity_top = max(
+            float(base.bounds[1, 2]),
+            float(topography.bounds[1, 2]) if topography is not None else 0.0,
+        ) + 1.0
+        water_mesh = _water_mesh(
+            water,
+            transform,
+            surface,
+            config.water_depth,
+        )
+        water_cavity = _water_mesh(
+            water,
+            transform,
+            surface,
+            config.water_depth,
+            cavity_top,
+        )
+        if water_cavity is not None:
+            base = _subtract_route_cavity(base, water_cavity, "the base")
+            if topography is not None:
+                topography = _subtract_route_cavity(
+                    topography, water_cavity, "the topography"
+                )
+        cavity = _route_mesh(
+            route,
+            transform,
+            surface,
+            config,
+            custom_base.top_z if custom_base is not None else None,
+            custom_base is None,
+            custom_base.overlap_depth if custom_base is not None else 0.05,
+            city_cavity_top=cavity_top,
+        )
+        base = _subtract_route_cavity(base, cavity, "the base")
+        if topography is not None:
+            topography = _subtract_route_cavity(
+                topography, cavity, "the topography"
+            )
+        if water_mesh is not None:
+            water_mesh = _subtract_route_cavity(
+                water_mesh, cavity, "the water inlay"
+            )
+    building_mesh = (
+        _building_mesh(buildings, transform, surface, config)
+        if config.mode == "city"
+        else None
+    )
     meshes = [("base", base), ("route", route_mesh)]
     if topography is not None:
         meshes.append(("topography", topography))
     if text_mesh is not None:
         meshes.append(("text", text_mesh))
+    if building_mesh is not None:
+        meshes.append(("buildings", building_mesh))
+    if water_mesh is not None:
+        meshes.append(("water", water_mesh))
     for name, mesh in meshes:
         if not mesh.is_watertight:
             raise Gpx2StlError(f"Generated {name} mesh is not watertight.")
@@ -1151,4 +1364,6 @@ def build_geometry(
         route=route_mesh,
         topography=topography,
         text=text_mesh,
+        buildings=building_mesh,
+        water=water_mesh,
     )

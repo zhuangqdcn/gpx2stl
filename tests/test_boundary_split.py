@@ -111,6 +111,28 @@ def test_boundary_settings_and_cli_override_independently(
         assert (config.route_boundary_percent, config.text_boundary_percent) == expected
 
 
+def test_directional_boundary_is_rejected_with_custom_base(
+    simple_gpx: Path, tmp_path: Path
+) -> None:
+    base = tmp_path / "base.stl"
+    base.touch()
+    parser = create_parser()
+
+    with pytest.raises(SystemExit):
+        config_from_args(
+            parser.parse_args(
+                [
+                    str(simple_gpx),
+                    "--base-stl",
+                    str(base),
+                    "--route-boundary-percent",
+                    "10,10,10,10",
+                ]
+            ),
+            parser,
+        )
+
+
 @pytest.mark.parametrize(
     ("route_boundary_percent", "text_boundary_percent"),
     [(0, 0), (10, 15), (125, 49.999)],
@@ -193,6 +215,18 @@ def test_config_exposes_only_split_boundary_fields(simple_gpx: Path, topo: bool)
     names = {field.name for field in fields(Config)}
     assert "boundary_percent" not in names
     assert "inner_size_percent" not in names
+
+
+def test_programmatic_city_default_uses_directional_padding(
+    simple_gpx: Path,
+) -> None:
+    config = Config(
+        gpx_file=simple_gpx,
+        output=simple_gpx.with_suffix(".3mf"),
+        mode="city",
+    )
+
+    assert config.resolved_route_boundary_percent == (10.0, 10.0, 10.0, 10.0)
     for retired in ("boundary_percent", "inner_size_percent"):
         with pytest.raises(TypeError):
             Config(gpx_file=simple_gpx, output=config.output, **{retired: 10})

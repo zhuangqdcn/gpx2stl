@@ -1,8 +1,11 @@
 {
   "gpx_file": null,
   "output": null,
+  "mode": "topo",
   "route_width": 1.0,
   "route_height": 2.0,
+  "route_depth": 0.6,
+  "road_snap_distance": 5.0,
   "topo": true,
   "route_boundary_percent": "auto",
   "auto_boundary_max_distance_km": 10.0,
@@ -36,6 +39,10 @@
   "topo_dir": "asset",
   "topo_dir_windows": null,
   "topo_dir_linux": null,
+  "city_dir": "asset/city",
+  "building_default_height": 10.0,
+  "building_height_scale": 5.0,
+  "water_depth": 0.4,
   "dem_type": null,
   "api_key": null,
   "force": false

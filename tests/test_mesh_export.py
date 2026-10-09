@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import lib3mf
 import numpy as np
@@ -9,6 +10,7 @@ import pytest
 import trimesh
 from matplotlib.textpath import TextToPath
 from matplotlib.textpath import TextPath
+from shapely.geometry import Polygon
 
 from gpx2stl.errors import Gpx2StlError
 from gpx2stl.export import export_geometry
@@ -79,6 +81,81 @@ def test_topo_circle_geometry_is_watertight(simple_gpx: Path, tmp_path: Path) ->
     raw_relief = np.ptp(SlopedDem().sample_projected(projected, route))
     model_relief = np.ptp(top_vertices[:, 2])
     assert np.isclose(model_relief, raw_relief * transform.scale)
+
+
+def test_city_geometry_has_flush_route_cavity_and_complete_building(
+    simple_gpx: Path, tmp_path: Path
+) -> None:
+    route = project_paths(read_gpx(simple_gpx))
+    footprint = create_footprint(route.points, "square", 10.0, 1.0)
+    transform = create_model_transform(footprint, 20.0)
+    center = route.points[len(route.points) // 2]
+    half_size = footprint.radius * 0.05
+    polygon = Polygon(
+        [
+            center + (-half_size, -half_size),
+            center + (half_size, -half_size),
+            center + (half_size, half_size),
+            center + (-half_size, half_size),
+        ]
+    )
+    water_polygon = Polygon(
+        [
+            footprint.center + (-half_size * 3, half_size * 2),
+            footprint.center + (-half_size, half_size * 2),
+            footprint.center + (-half_size, half_size * 4),
+            footprint.center + (-half_size * 3, half_size * 4),
+        ]
+    )
+    config = Config(
+        gpx_file=simple_gpx,
+        output=tmp_path / "city.3mf",
+        mode="city",
+        topo=True,
+        shape="square",
+        route_boundary_percent=10.0,
+        max_size=20.0,
+        route_width=1.0,
+        route_depth=0.6,
+    )
+
+    geometry = build_geometry(
+        route,
+        footprint,
+        transform,
+        config,
+        SlopedDem(),
+        buildings=(SimpleNamespace(polygon=polygon, height_m=10.0),),
+        water=(water_polygon,),
+    )
+
+    assert geometry.base.is_watertight
+    assert geometry.topography is not None and geometry.topography.is_watertight
+    assert geometry.route.is_watertight
+    assert geometry.buildings is not None and geometry.buildings.is_watertight
+    assert geometry.water is not None and geometry.water.is_watertight
+    expected_bounds = Polygon(transform.to_model(np.asarray(polygon.exterior.coords))).bounds
+    actual_bounds = (
+        geometry.buildings.bounds[0, 0],
+        geometry.buildings.bounds[0, 1],
+        geometry.buildings.bounds[1, 0],
+        geometry.buildings.bounds[1, 1],
+    )
+    assert actual_bounds == pytest.approx(expected_bounds)
+
+    export_geometry(geometry, config)
+    wrapper = lib3mf.get_wrapper()
+    model = wrapper.CreateModel()
+    model.QueryReader("3mf").ReadFromFile(str(config.output))
+    assert _mesh_names(model) == {
+        "Base",
+        "Buildings",
+        "GPX route",
+        "Topography",
+        "Water",
+    }
+    assert _mesh_material_ids(model)["Buildings"] == 5
+    assert _mesh_material_ids(model)["Water"] == 6
 
 
 def test_hex_geometry_is_watertight(simple_gpx: Path, tmp_path: Path) -> None:

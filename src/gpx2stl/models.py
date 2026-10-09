@@ -9,20 +9,25 @@ from numpy.typing import NDArray
 from pyproj import Transformer
 
 Shape = Literal["square", "circle", "hex"]
+Mode = Literal["topo", "city"]
 TopoSource = Literal["auto", "online", "local"]
 FontWeight = Literal["normal", "bold"]
 FontStyle = Literal["normal", "italic"]
 TextAlign = Literal["left", "center", "right"]
 TextMode = Literal["raised", "embedded"]
-RouteBoundaryPercent = float | Literal["auto"]
+DirectionalRouteBoundary = tuple[float, float, float, float]
+RouteBoundaryPercent = float | DirectionalRouteBoundary | Literal["auto"]
 
 
 @dataclass(frozen=True)
 class Config:
     gpx_file: Path
     output: Path
+    mode: Mode = "topo"
     route_width: float = 1.0
     route_height: float = 2.0
+    route_depth: float = 0.6
+    road_snap_distance: float = 5.0
     topo: bool = True
     route_boundary_percent: RouteBoundaryPercent | None = None
     auto_boundary_max_distance_km: float = 10.0
@@ -52,6 +57,10 @@ class Config:
     topo_source: TopoSource = "auto"
     topo_file: Path | None = None
     topo_dir: Path = Path("asset")
+    city_dir: Path = Path("asset/city")
+    building_default_height: float = 10.0
+    building_height_scale: float = 5.0
+    water_depth: float = 0.4
     dem_type: str | None = None
     api_key: str | None = None
     force: bool = False
@@ -59,6 +68,12 @@ class Config:
     @property
     def resolved_route_boundary_percent(self) -> RouteBoundaryPercent:
         if self.route_boundary_percent is None:
+            if self.mode == "city":
+                return (
+                    10.0
+                    if self.base_stl is not None
+                    else (10.0, 10.0, 10.0, 10.0)
+                )
             return "auto" if self.topo else 10.0
         return self.route_boundary_percent
 

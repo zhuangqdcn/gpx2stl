@@ -57,6 +57,24 @@ def test_explicit_auto_cli_preserves_independent_text_boundary(simple_gpx: Path)
     assert config.auto_boundary_max_distance_km == 12.5
 
 
+def test_city_mode_can_explicitly_select_auto_boundary(simple_gpx: Path) -> None:
+    parser = create_parser()
+    config = config_from_args(
+        parser.parse_args(
+            [
+                str(simple_gpx),
+                "--mode",
+                "city",
+                "--route-boundary-percent",
+                "auto",
+            ]
+        ),
+        parser,
+    )
+
+    assert config.resolved_route_boundary_percent == "auto"
+
+
 @pytest.mark.parametrize("topo", [True, False])
 @pytest.mark.parametrize("padding", [0.0, 10.0, 25.0])
 def test_explicit_numeric_boundary_overrides_programmatic_default(simple_gpx, topo, padding):
@@ -82,7 +100,7 @@ def test_help_reports_requested_defaults():
         "auto_valley_max_height_m": "default: 1000",
         "auto_valley_max_height_percent": "default: 100",
         "text_boundary_percent": "default: 7",
-        "route_boundary_percent": "default: auto with topo, 10 without",
+        "route_boundary_percent": "default: 10,10,10,10 in city mode",
     }
     for action in parser._actions:
         if action.dest in expected:
@@ -111,6 +129,28 @@ def test_auto_and_numeric_settings_cli_precedence(
     assert config.auto_boundary_max_distance_km == 8.0
 
 
+def test_directional_settings_array_and_cli_precedence(
+    simple_gpx: Path, tmp_path: Path
+) -> None:
+    path = tmp_path / "directional-settings.json"
+    path.write_text(
+        json.dumps({"mode": "city", "route_boundary_percent": [1, 2, 3, 4]}),
+        encoding="utf-8",
+    )
+    parser = create_parser(load_settings(path))
+
+    configured = config_from_args(parser.parse_args([str(simple_gpx)]), parser)
+    overridden = config_from_args(
+        parser.parse_args(
+            [str(simple_gpx), "--route-boundary-percent", "5,6,7,8"]
+        ),
+        parser,
+    )
+
+    assert configured.route_boundary_percent == (1.0, 2.0, 3.0, 4.0)
+    assert overridden.route_boundary_percent == (5.0, 6.0, 7.0, 8.0)
+
+
 @pytest.mark.parametrize("settings", [{}, {"route_boundary_percent": "auto"}])
 def test_explicit_auto_without_topography_is_rejected(
     simple_gpx: Path, settings: dict, capsys: pytest.CaptureFixture[str],
@@ -133,13 +173,43 @@ def test_numeric_override_allows_flat_model_with_auto_settings(simple_gpx: Path)
     assert config.resolved_route_boundary_percent == 0.0
 
 
-@pytest.mark.parametrize("value", ["AUTO", "automatic", "-1", "nan", "inf", "-inf"])
+@pytest.mark.parametrize(
+    "value",
+    [
+        "AUTO",
+        "automatic",
+        "-1",
+        "nan",
+        "inf",
+        "-inf",
+        "1,2,3",
+        "1,2,3,4,5",
+        "1,,3,4",
+        "1,2,-3,4",
+        "1,2,nan,4",
+    ],
+)
 def test_auto_boundary_rejects_invalid_cli_values(simple_gpx: Path, value: str) -> None:
     with pytest.raises(SystemExit):
         create_parser().parse_args([str(simple_gpx), f"--route-boundary-percent={value}"])
 
 
-@pytest.mark.parametrize("value", [None, True, False, [], {}, "AUTO"])
+@pytest.mark.parametrize(
+    "value",
+    [
+        None,
+        True,
+        False,
+        [],
+        [1, 2, 3],
+        [1, 2, 3, 4, 5],
+        [1, 2, "3", 4],
+        [1, 2, -3, 4],
+        {},
+        "AUTO",
+        "1,2,3,4",
+    ],
+)
 def test_auto_boundary_rejects_invalid_json_values(
     simple_gpx: Path, tmp_path: Path, value: object,
 ) -> None:

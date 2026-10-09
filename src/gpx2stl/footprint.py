@@ -7,7 +7,12 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy.optimize import linprog
 
-from gpx2stl.models import Footprint, ModelTransform, Shape
+from gpx2stl.models import (
+    DirectionalRouteBoundary,
+    Footprint,
+    ModelTransform,
+    Shape,
+)
 
 _HEX_APOTHEM_RATIO = math.sqrt(3.0) / 2.0
 
@@ -114,12 +119,40 @@ def footprint_vertices(footprint: Footprint) -> NDArray[np.float64]:
     raise ValueError("Circular footprints do not have polygon vertices.")
 
 
+def _directionally_padded_box(
+    points: NDArray[np.float64],
+    padding_percent: DirectionalRouteBoundary,
+) -> NDArray[np.float64]:
+    north, east, south, west = padding_percent
+    minimum = points.min(axis=0)
+    maximum = points.max(axis=0)
+    span = maximum - minimum
+    padded_minimum = minimum - np.array(
+        [span[0] * west / 100.0, span[1] * south / 100.0]
+    )
+    padded_maximum = maximum + np.array(
+        [span[0] * east / 100.0, span[1] * north / 100.0]
+    )
+    return np.array(
+        [
+            padded_minimum,
+            [padded_maximum[0], padded_minimum[1]],
+            padded_maximum,
+            [padded_minimum[0], padded_maximum[1]],
+        ],
+        dtype=np.float64,
+    )
+
+
 def create_footprint(
     points: NDArray[np.float64],
     shape: Shape,
-    route_boundary_percent: float,
+    route_boundary_percent: float | DirectionalRouteBoundary,
     minimum_diameter: float,
 ) -> Footprint:
+    if isinstance(route_boundary_percent, tuple):
+        points = _directionally_padded_box(points, route_boundary_percent)
+        route_boundary_percent = 0.0
     padding = route_boundary_percent / 100.0
     if shape == "circle":
         center, radius = minimum_enclosing_circle(points)

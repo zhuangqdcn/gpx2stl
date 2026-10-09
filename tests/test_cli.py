@@ -26,10 +26,13 @@ def test_cli_defaults(simple_gpx: Path, monkeypatch: pytest.MonkeyPatch) -> None
     config = config_from_args(args, parser)
 
     assert config.output == simple_gpx.with_suffix(".3mf")
+    assert config.mode == "topo"
     assert config.topo is True
     assert config.use_3mf is True
     assert config.route_width == 1.0
     assert config.route_height == 2.0
+    assert config.route_depth == 0.6
+    assert config.road_snap_distance == 5.0
     assert config.route_boundary_percent == "auto"
     assert config.resolved_route_boundary_percent == "auto"
     assert config.auto_boundary_max_distance_km == 10.0
@@ -54,6 +57,10 @@ def test_cli_defaults(simple_gpx: Path, monkeypatch: pytest.MonkeyPatch) -> None
     assert config.topo_source == "auto"
     assert config.topo_file is None
     assert config.topo_dir == (Path.cwd() / "asset").resolve()
+    assert config.city_dir == (Path.cwd() / "asset" / "city").resolve()
+    assert config.building_default_height == 10.0
+    assert config.building_height_scale == 5.0
+    assert config.water_depth == 0.4
     assert config.api_key == "test-key"
 
 
@@ -67,6 +74,104 @@ def test_no_topo_stl_does_not_require_key(simple_gpx: Path) -> None:
     assert config.api_key is None
     assert config.route_boundary_percent == 10.0
     assert config.resolved_route_boundary_percent == 10.0
+
+
+def test_city_mode_configuration(simple_gpx: Path) -> None:
+    parser = create_parser()
+    config = config_from_args(
+        parser.parse_args(
+            [
+                str(simple_gpx),
+                "--mode",
+                "city",
+                "--road-snap-distance",
+                "0",
+                "--route-depth",
+                "0.8",
+                "--building-default-height",
+                "12",
+                "--building-height-scale",
+                "1.5",
+                "--city-dir",
+                "osm-cache",
+            ]
+        ),
+        parser,
+    )
+
+    assert config.mode == "city"
+    assert config.route_width == 0.5
+    assert config.route_height == 1.5
+    assert config.route_boundary_percent == (10.0, 10.0, 10.0, 10.0)
+    assert config.resolved_route_boundary_percent == (10.0, 10.0, 10.0, 10.0)
+    assert config.road_snap_distance == 0.0
+    assert config.route_depth == 0.8
+    assert config.building_default_height == 12.0
+    assert config.building_height_scale == 1.5
+    assert config.city_dir == (Path.cwd() / "osm-cache").resolve()
+
+
+def test_city_mode_route_defaults_are_narrow_and_deep(simple_gpx: Path) -> None:
+    parser = create_parser()
+    config = config_from_args(
+        parser.parse_args([str(simple_gpx), "--mode", "city"]),
+        parser,
+    )
+
+    assert config.route_width == 0.5
+    assert config.route_height == 1.5
+    assert config.route_depth == 1.5
+
+
+def test_city_mode_accepts_directional_route_boundary(simple_gpx: Path) -> None:
+    parser = create_parser()
+    config = config_from_args(
+        parser.parse_args(
+            [
+                str(simple_gpx),
+                "--mode",
+                "city",
+                "--route-boundary-percent",
+                "10,20,30,40",
+            ]
+        ),
+        parser,
+    )
+
+    assert config.route_boundary_percent == (10.0, 20.0, 30.0, 40.0)
+
+
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    [
+        (["--mode", "city", "--no-topo"], "requires topography"),
+        (["--mode", "city", "--no-3mf"], "requires 3MF"),
+    ],
+)
+def test_city_mode_rejects_incompatible_output_options(
+    simple_gpx: Path, arguments: list[str], message: str, capsys
+) -> None:
+    parser = create_parser()
+    with pytest.raises(SystemExit):
+        config_from_args(parser.parse_args([str(simple_gpx), *arguments]), parser)
+    assert message in capsys.readouterr().err
+
+
+def test_city_mode_accepts_custom_base_with_symmetric_default(
+    simple_gpx: Path, tmp_path: Path
+) -> None:
+    base = tmp_path / "base.stl"
+    base.touch()
+    parser = create_parser()
+    config = config_from_args(
+        parser.parse_args(
+            [str(simple_gpx), "--mode", "city", "--base-stl", str(base)]
+        ),
+        parser,
+    )
+
+    assert config.base_stl == base.resolve()
+    assert config.route_boundary_percent == 10.0
 
 
 def test_directory_input_creates_one_config_per_gpx(

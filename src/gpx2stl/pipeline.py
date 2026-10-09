@@ -3,11 +3,12 @@ from __future__ import annotations
 import numpy as np
 import shapely
 from numpy.typing import NDArray
-from shapely.geometry import LineString, Polygon
+from shapely.geometry import LineString, Point, Polygon
 
 from gpx2stl.activity import read_activity
 from gpx2stl.auto_boundary import ValleyCriteria, discover_auto_boundary
 from gpx2stl.custom_base import CustomBase, prepare_custom_base, sample_exterior
+from gpx2stl.city import CityData, load_city_data
 from gpx2stl.dem import (
     DemSource,
     GeographicBounds,
@@ -32,6 +33,7 @@ from gpx2stl.gpx import interpolate_elevations, project_paths
 from gpx2stl.mesh import build_geometry
 from gpx2stl.models import Config, Footprint, ModelTransform, ProjectedRoute
 from gpx2stl.progress import ProgressCallback, console_progress
+from gpx2stl.road_match import match_route_to_roads
 
 
 class _FiniteDemSource(DemSource):
@@ -54,6 +56,35 @@ def _generated_perimeter(footprint: Footprint) -> NDArray[np.float64]:
             (np.cos(angles), np.sin(angles))
         )
     return sample_exterior(Polygon(footprint_vertices(footprint)))
+
+
+def _projected_footprint(footprint: Footprint) -> Polygon:
+    if footprint.shape == "circle":
+        return Point(footprint.center).buffer(footprint.radius, quad_segs=64)
+    return Polygon(footprint_vertices(footprint))
+
+
+def _route_fits_footprint(
+    route: ProjectedRoute,
+    footprint: Footprint,
+    transform: ModelTransform,
+    route_width: float,
+    custom_base: CustomBase | None = None,
+) -> bool:
+    if custom_base is not None:
+        model_route = shapely.union_all(
+            [LineString(transform.to_model(path)) for path in route.paths]
+        )
+        return bool(
+            custom_base.terrain_polygon.buffer(
+                -route_width / 2.0, quad_segs=32, join_style="round"
+            ).covers(model_route)
+        )
+    clearance = route_width / (2.0 * transform.scale)
+    printable = _projected_footprint(footprint).buffer(
+        -clearance, quad_segs=32, join_style="round"
+    )
+    return all(printable.covers(LineString(path)) for path in route.paths)
 
 
 def _validate_auto_fit(
@@ -245,6 +276,11 @@ def convert(
         )
     custom_base: CustomBase | None = None
     if config.base_stl is not None:
+        if isinstance(numeric_boundary, tuple):
+            raise Gpx2StlError(
+                "Directional route boundary percentages are not supported with "
+                "a custom STL base; use one symmetric percentage."
+            )
         progress(f"Loading and validating custom base STL from {config.base_stl}")
         custom_base = prepare_custom_base(
             config.base_stl,
@@ -303,6 +339,7 @@ def convert(
         )
 
     dem = None
+    city_data = CityData((), ())
     if config.topo:
         if projected_perimeter is not None:
             bounds = request_projected_bounds(projected_perimeter, route)
@@ -320,6 +357,56 @@ def convert(
                 for item in bounds
             )
         )
+        if config.mode == "city":
+            city_clip = (
+                shapely.transform(
+                    custom_base.terrain_polygon, transform.to_projected
+                )
+                if custom_base is not None
+                else _projected_footprint(footprint)
+            )
+            progress("Loading cached OpenStreetMap buildings, roads, and water")
+            city_data = load_city_data(
+                bounds,
+                config.city_dir,
+                route,
+                city_clip,
+                config.building_default_height,
+                progress=progress,
+            )
+            progress(
+                f"Loaded {len(city_data.buildings):,} buildings and "
+                f"{len(city_data.roads):,} roads, including "
+                f"{len(city_data.bridges):,} bridge structures, plus "
+                f"{len(city_data.water):,} water bodies"
+            )
+            matched_route = match_route_to_roads(
+                route, city_data.roads, config.road_snap_distance
+            )
+            if _route_fits_footprint(
+                matched_route,
+                footprint,
+                transform,
+                config.route_width,
+                custom_base,
+            ):
+                changed_points = sum(
+                    not np.array_equal(before, after)
+                    for before, after in zip(
+                        route.paths, matched_route.paths, strict=True
+                    )
+                )
+                route = matched_route
+                progress(
+                    f"Road-matched {changed_points} of {len(route.paths)} route "
+                    f"{'path' if len(route.paths) == 1 else 'paths'} within "
+                    f"{config.road_snap_distance:g} m"
+                )
+            else:
+                progress(
+                    "Road matching would exceed the printable route clearance; "
+                    "using the original activity geometry"
+                )
         if discovery is not None:
             assert projected_perimeter is not None
             if _discovery_covers_final(discovery.dem, bounds, projected_perimeter, route):
@@ -337,14 +424,26 @@ def convert(
         else:
             progress("Topography disabled; using the flat custom top")
     progress("Generating watertight base, topography, and route meshes")
-    geometry = build_geometry(
-        route,
-        footprint,
-        transform,
-        config,
-        dem,
-        custom_base,
-    )
+    if config.mode == "city":
+        geometry = build_geometry(
+            route,
+            footprint,
+            transform,
+            config,
+            dem,
+            custom_base,
+            buildings=city_data.buildings + city_data.bridges,
+            water=city_data.water,
+        )
+    else:
+        geometry = build_geometry(
+            route,
+            footprint,
+            transform,
+            config,
+            dem,
+            custom_base,
+        )
     progress(
         f"Generated base mesh ({len(geometry.base.vertices):,} vertices, "
         f"{len(geometry.base.faces):,} faces)"
@@ -363,6 +462,18 @@ def convert(
         progress(
             f"Generated text mesh ({len(geometry.text.vertices):,} vertices, "
             f"{len(geometry.text.faces):,} faces)"
+        )
+    buildings_mesh = getattr(geometry, "buildings", None)
+    if buildings_mesh is not None:
+        progress(
+            f"Generated buildings mesh ({len(buildings_mesh.vertices):,} "
+            f"vertices, {len(buildings_mesh.faces):,} faces)"
+        )
+    water_mesh = getattr(geometry, "water", None)
+    if water_mesh is not None:
+        progress(
+            f"Generated water mesh ({len(water_mesh.vertices):,} "
+            f"vertices, {len(water_mesh.faces):,} faces)"
         )
     export_geometry(geometry, config, progress)
     progress(f"Finished writing {config.output}")

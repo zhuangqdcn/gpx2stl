@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import numpy as np
+from shapely.geometry import Point, Polygon
 
 from gpx2stl.footprint import (
+    _directionally_padded_box,
     add_route_clearance,
     create_footprint,
     footprint_vertices,
@@ -16,6 +18,56 @@ def test_square_padding_is_added_on_every_side() -> None:
     footprint = create_footprint(points, "square", 10.0, 1.0)
     assert footprint.center.tolist() == [50.0, 25.0]
     assert footprint.diameter == 120.0
+
+
+def test_directional_padding_expands_north_east_south_west_independently() -> None:
+    points = np.array([[0.0, 0.0], [100.0, 50.0]])
+
+    padded = _directionally_padded_box(points, (10.0, 20.0, 30.0, 40.0))
+
+    assert padded.min(axis=0).tolist() == [-40.0, -15.0]
+    assert padded.max(axis=0).tolist() == [120.0, 55.0]
+
+
+def test_directional_square_fits_asymmetric_padded_box() -> None:
+    points = np.array([[0.0, 0.0], [100.0, 50.0]])
+
+    footprint = create_footprint(
+        points, "square", (10.0, 20.0, 30.0, 40.0), 1.0
+    )
+
+    assert footprint.center.tolist() == [40.0, 20.0]
+    assert footprint.diameter == 160.0
+
+
+def test_directional_circle_and_hex_contain_padded_box() -> None:
+    points = np.array([[0.0, 0.0], [100.0, 50.0]])
+    padded = _directionally_padded_box(points, (10.0, 20.0, 30.0, 40.0))
+
+    circle = create_footprint(
+        points, "circle", (10.0, 20.0, 30.0, 40.0), 1.0
+    )
+    hexagon = create_footprint(
+        points, "hex", (10.0, 20.0, 30.0, 40.0), 1.0
+    )
+
+    assert all(
+        np.linalg.norm(point - circle.center) <= circle.radius + 1e-7
+        for point in padded
+    )
+    polygon = Polygon(footprint_vertices(hexagon))
+    assert all(polygon.buffer(1e-7).covers(Point(point)) for point in padded)
+
+
+def test_directional_padding_on_degenerate_axis_uses_minimum_diameter() -> None:
+    points = np.array([[0.0, 0.0], [0.0, 100.0]])
+
+    footprint = create_footprint(
+        points, "square", (10.0, 50.0, 20.0, 50.0), 2.0
+    )
+
+    assert footprint.center.tolist() == [0.0, 45.0]
+    assert footprint.diameter == 130.0
 
 
 def test_minimum_enclosing_circle() -> None:

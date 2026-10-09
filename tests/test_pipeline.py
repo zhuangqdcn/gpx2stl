@@ -7,9 +7,10 @@ import pytest
 import rasterio
 import trimesh
 from rasterio.transform import from_bounds
-from shapely.geometry import Point, Polygon
+from shapely.geometry import LineString, Point, Polygon, box
 
 import gpx2stl.pipeline
+from gpx2stl.city import CityBuilding, CityData
 from gpx2stl.dem import DemSource, GeographicBounds
 from gpx2stl.errors import Gpx2StlError
 from gpx2stl.models import Config, TopoSource
@@ -64,6 +65,65 @@ def test_conversion_uses_local_file_without_network(
     )
     assert output.is_file()
     assert any(message.startswith("Generated topography mesh") for message in messages)
+
+
+def test_city_conversion_loads_osm_matches_roads_and_exports_buildings(
+    simple_gpx: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    topo_file = tmp_path / "terrain.tif"
+    with rasterio.open(
+        topo_file,
+        "w",
+        driver="GTiff",
+        width=8,
+        height=8,
+        count=1,
+        dtype="float32",
+        crs="EPSG:4326",
+        transform=from_bounds(-123.0, 36.0, -121.0, 38.0, 8, 8),
+    ) as dataset:
+        dataset.write(np.arange(64, dtype=np.float32).reshape(8, 8), 1)
+
+    def city_data(bounds, cache_dir, route, projected_clip, default_height, **kwargs):
+        center = projected_clip.representative_point()
+        radius = min(
+            projected_clip.bounds[2] - projected_clip.bounds[0],
+            projected_clip.bounds[3] - projected_clip.bounds[1],
+        ) * 0.02
+        building = box(
+            center.x - radius,
+            center.y - radius,
+            center.x + radius,
+            center.y + radius,
+        )
+        return CityData(
+            (CityBuilding(building, default_height),),
+            (LineString(route.paths[0]),),
+        )
+
+    monkeypatch.setattr(gpx2stl.pipeline, "load_city_data", city_data)
+    output = tmp_path / "city.3mf"
+    messages: list[str] = []
+
+    convert(
+        Config(
+            gpx_file=simple_gpx,
+            output=output,
+            mode="city",
+            topo_source="local",
+            topo_file=topo_file,
+            topo_dir=tmp_path / "asset",
+            city_dir=tmp_path / "city",
+            max_size=20.0,
+        ),
+        progress=messages.append,
+    )
+
+    assert output.is_file()
+    assert any(message.startswith("Loaded 1 buildings and 1 roads") for message in messages)
+    assert any(message.startswith("Road-matched ") for message in messages)
+    assert any(message.startswith("Generated buildings mesh") for message in messages)
+    assert "Writing 4-object, 5-material 3MF package" in messages
 
 
 def test_conversion_reports_meaningful_progress(
@@ -218,6 +278,57 @@ def test_conversion_preserves_custom_stl_dimensions(
     assert output.is_file()
     assert "Using custom 60.0 x 40.0 mm base with top Z 5.0 mm" in messages
     assert any(message.startswith("Fitted route at ") for message in messages)
+
+
+def test_city_conversion_supports_custom_stl_base(
+    simple_gpx: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base = tmp_path / "base.stl"
+    trimesh.creation.extrude_polygon(
+        Polygon([(-30, -20), (30, -20), (30, 20), (-30, 20)]),
+        5.0,
+    ).export(base, file_type="stl")
+    topo_file = tmp_path / "terrain.tif"
+    with rasterio.open(
+        topo_file,
+        "w",
+        driver="GTiff",
+        width=8,
+        height=8,
+        count=1,
+        dtype="float32",
+        crs="EPSG:4326",
+        transform=from_bounds(-123.0, 36.0, -121.0, 38.0, 8, 8),
+    ) as dataset:
+        dataset.write(np.arange(64, dtype=np.float32).reshape(8, 8), 1)
+    clips = []
+
+    def city_data(bounds, cache_dir, route, projected_clip, default_height, **kwargs):
+        clips.append(projected_clip)
+        return CityData((), (LineString(route.paths[0]),))
+
+    monkeypatch.setattr(gpx2stl.pipeline, "load_city_data", city_data)
+    output = tmp_path / "custom-city.3mf"
+    messages: list[str] = []
+
+    convert(
+        Config(
+            gpx_file=simple_gpx,
+            output=output,
+            mode="city",
+            base_stl=base,
+            topo_source="local",
+            topo_file=topo_file,
+            topo_dir=tmp_path / "asset",
+            city_dir=tmp_path / "city",
+        ),
+        progress=messages.append,
+    )
+
+    assert output.is_file()
+    assert clips and clips[0].is_valid and clips[0].area > 0.0
+    assert "Using custom 60.0 x 40.0 mm base with top Z 5.0 mm" in messages
+    assert "Writing 3-object, 4-material 3MF package" in messages
 
 
 def test_auto_prefers_local_without_api_key(
