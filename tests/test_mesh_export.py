@@ -258,6 +258,12 @@ def test_city_geometry_has_flush_route_cavity_and_complete_building(
             footprint.center + (-half_size * 3, half_size * 4),
         ]
     )
+    road = LineString(
+        [
+            footprint.center + (-half_size * 4, half_size * 4),
+            footprint.center + (half_size * 4, half_size * 4),
+        ]
+    )
     config = Config(
         gpx_file=simple_gpx,
         output=tmp_path / "city.3mf",
@@ -277,6 +283,7 @@ def test_city_geometry_has_flush_route_cavity_and_complete_building(
         config,
         SlopedDem(),
         buildings=(SimpleNamespace(polygon=polygon, height_m=10.0),),
+        roads=(road,),
         water=(water_polygon,),
     )
 
@@ -285,6 +292,7 @@ def test_city_geometry_has_flush_route_cavity_and_complete_building(
     assert geometry.route.is_watertight
     assert geometry.buildings is not None and geometry.buildings.is_watertight
     assert geometry.water is not None and geometry.water.is_watertight
+    assert geometry.roads is not None and geometry.roads.is_watertight
     expected_bounds = Polygon(transform.to_model(np.asarray(polygon.exterior.coords))).bounds
     actual_bounds = (
         geometry.buildings.bounds[0, 0],
@@ -302,11 +310,13 @@ def test_city_geometry_has_flush_route_cavity_and_complete_building(
         "Base",
         "Buildings",
         "GPX route",
+        "Roads",
         "Topography",
         "Water",
     }
     assert _mesh_material_ids(model)["Buildings"] == 5
     assert _mesh_material_ids(model)["Water"] == 6
+    assert _mesh_material_ids(model)["Roads"] == 7
 
 
 def test_hex_geometry_is_watertight(simple_gpx: Path, tmp_path: Path) -> None:
@@ -625,16 +635,25 @@ def _mesh_material_ids(model: object) -> dict[str, int]:
     return material_ids
 
 
+def _assembly_names(model: object) -> set[str]:
+    names = set()
+    assemblies = model.GetComponentsObjects()
+    while assemblies.MoveNext():
+        names.add(assemblies.GetCurrentComponentsObject().GetName())
+    return names
+
+
 def test_3mf_round_trip_has_two_meshes_and_four_material_slots(
     simple_gpx: Path, tmp_path: Path
 ) -> None:
-    output = tmp_path / "route.3mf"
+    output = tmp_path / "Morning Ride.3mf"
     geometry, config = _geometry(simple_gpx, output, True)
     export_geometry(geometry, config)
     wrapper = lib3mf.get_wrapper()
     model = wrapper.CreateModel()
     model.QueryReader("3mf").ReadFromFile(str(output))
     assert model.GetMeshObjects().Count() == 2
+    assert _assembly_names(model) == {"Morning Ride"}
     assert _mesh_names(model) == {"Base", "GPX route"}
     assert _mesh_material_ids(model) == {"Base": 4, "GPX route": 1}
     groups = model.GetBaseMaterialGroups()

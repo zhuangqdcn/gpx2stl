@@ -38,6 +38,7 @@ class Geometry:
     text: trimesh.Trimesh | None = None
     buildings: trimesh.Trimesh | None = None
     water: trimesh.Trimesh | None = None
+    roads: trimesh.Trimesh | None = None
 
 
 @dataclass(frozen=True)
@@ -1128,6 +1129,36 @@ def _subtract_route_cavity(
     return result
 
 
+def _subtract_optional_inlay(
+    target: trimesh.Trimesh,
+    cavity: trimesh.Trimesh,
+    description: str,
+) -> trimesh.Trimesh | None:
+    if (
+        cavity.bounds[0, 2] >= target.bounds[1, 2]
+        or cavity.bounds[1, 2] <= target.bounds[0, 2]
+    ):
+        return target
+    try:
+        result = trimesh.boolean.difference(
+            [target, cavity],
+            engine="manifold",
+            check_volume=True,
+        )
+    except Exception as exc:
+        raise Gpx2StlError(
+            f"Unable to cut the higher-priority inlay from {description}: {exc}"
+        ) from exc
+    if isinstance(result, trimesh.Trimesh) and result.is_empty:
+        return None
+    if not isinstance(result, trimesh.Trimesh):
+        raise Gpx2StlError(
+            f"Unable to cut the higher-priority inlay from {description}."
+        )
+    result.remove_unreferenced_vertices()
+    return result
+
+
 def _building_mesh(
     buildings: tuple[CityBuilding, ...],
     transform: ModelTransform,
@@ -1304,6 +1335,67 @@ def _water_mesh(
     return result
 
 
+def _road_mesh(
+    roads: tuple[LineString, ...],
+    route: ProjectedRoute,
+    transform: ModelTransform,
+    surface_height: HeightFunction,
+    width: float,
+    depth: float,
+    printable_clip: Polygon,
+    cavity_top: float | None = None,
+) -> trimesh.Trimesh | None:
+    if not roads:
+        return None
+    model_roads = shapely.unary_union(
+        [
+            shapely.transform(road, transform.to_model).buffer(
+                width / 2.0,
+                cap_style="round",
+                join_style="round",
+                quad_segs=4,
+            )
+            for road in roads
+        ]
+    ).intersection(printable_clip)
+    model_route = shapely.unary_union(
+        [
+            LineString(transform.to_model(path)).buffer(
+                width / 2.0,
+                cap_style="round",
+                join_style="round",
+                quad_segs=4,
+            )
+            for path in route.paths
+        ]
+    )
+    model_roads = shapely.orient_polygons(
+        model_roads.difference(model_route),
+        exterior_cw=True,
+    )
+    components: list[trimesh.Trimesh] = []
+    for polygon in _polygon_parts(model_roads):
+        if polygon.is_empty or polygon.area <= 1e-9:
+            continue
+
+        def bottom_height(points: NDArray[np.float64]) -> NDArray[np.float64]:
+            return np.maximum(0.0, surface_height(points) - depth)
+
+        def top_height(points: NDArray[np.float64]) -> NDArray[np.float64]:
+            if cavity_top is not None:
+                return np.full(len(points), cavity_top, dtype=np.float64)
+            return surface_height(points)
+
+        components.append(
+            _variable_extrusion(polygon, bottom_height, top_height)
+        )
+    if not components:
+        return None
+    result = trimesh.util.concatenate(components)
+    result.remove_unreferenced_vertices()
+    return result
+
+
 def _no_topo_route_height(
     points: NDArray[np.float64],
     *,
@@ -1326,6 +1418,7 @@ def build_geometry(
     dem: DemSource | None,
     custom_base: CustomBase | None = None,
     buildings: tuple[CityBuilding, ...] = (),
+    roads: tuple[LineString, ...] = (),
     water: tuple[Polygon, ...] = (),
 ) -> Geometry:
     raw_height = None if dem is None else _raw_height_function(dem, route, transform)
@@ -1409,11 +1502,17 @@ def build_geometry(
         custom_base.overlap_depth if custom_base is not None else 0.05,
     )
     water_mesh = None
+    road_mesh = None
     if config.mode == "city":
         cavity_top = max(
             float(base.bounds[1, 2]),
             float(topography.bounds[1, 2]) if topography is not None else 0.0,
         ) + 1.0
+        printable_clip = _structure_printable_clip(
+            footprint,
+            transform,
+            custom_base,
+        )
         water_mesh = _water_mesh(
             water,
             transform,
@@ -1433,6 +1532,35 @@ def build_geometry(
                 topography = _subtract_route_cavity(
                     topography, water_cavity, "the topography"
                 )
+        road_mesh = _road_mesh(
+            roads,
+            route,
+            transform,
+            surface,
+            config.route_width,
+            config.route_depth,
+            printable_clip,
+        )
+        road_cavity = _road_mesh(
+            roads,
+            route,
+            transform,
+            surface,
+            config.route_width,
+            config.route_depth,
+            printable_clip,
+            cavity_top,
+        )
+        if road_cavity is not None:
+            base = _subtract_route_cavity(base, road_cavity, "the base")
+            if topography is not None:
+                topography = _subtract_route_cavity(
+                    topography, road_cavity, "the topography"
+                )
+            if water_mesh is not None:
+                water_mesh = _subtract_optional_inlay(
+                    water_mesh, road_cavity, "the water inlay"
+                )
         cavity = _route_mesh(
             route,
             transform,
@@ -1449,7 +1577,7 @@ def build_geometry(
                 topography, cavity, "the topography"
             )
         if water_mesh is not None:
-            water_mesh = _subtract_route_cavity(
+            water_mesh = _subtract_optional_inlay(
                 water_mesh, cavity, "the water inlay"
             )
     building_mesh = (
@@ -1476,6 +1604,8 @@ def build_geometry(
         meshes.append(("buildings", building_mesh))
     if water_mesh is not None:
         meshes.append(("water", water_mesh))
+    if road_mesh is not None:
+        meshes.append(("roads", road_mesh))
     for name, mesh in meshes:
         if not mesh.is_watertight:
             raise Gpx2StlError(f"Generated {name} mesh is not watertight.")
@@ -1488,4 +1618,5 @@ def build_geometry(
         text=text_mesh,
         buildings=building_mesh,
         water=water_mesh,
+        roads=road_mesh,
     )

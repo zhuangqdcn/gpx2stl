@@ -468,6 +468,7 @@ def convert(
             dem,
             custom_base,
             buildings=city_data.buildings + city_data.bridges,
+            roads=city_data.roads,
             water=city_data.water,
         )
     else:
@@ -509,6 +510,12 @@ def convert(
         progress(
             f"Generated water mesh ({len(water_mesh.vertices):,} "
             f"vertices, {len(water_mesh.faces):,} faces)"
+        )
+    roads_mesh = getattr(geometry, "roads", None)
+    if roads_mesh is not None:
+        progress(
+            f"Generated roads mesh ({len(roads_mesh.vertices):,} "
+            f"vertices, {len(roads_mesh.faces):,} faces)"
         )
     export_geometry(geometry, config, progress)
     progress(f"Finished writing {config.output}")

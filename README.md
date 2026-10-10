@@ -5,7 +5,7 @@ Convert GPX tracks/routes and Garmin FIT activities into printable terrain model
 - **3MF by default:** separate named objects and materials for Bambu Studio. Filament 1 is the GPX route, filament 2 is topography, filament 3 is optional text, and filament 4 is the base.
 - **STL on request:** one watertight mesh containing the base, route, and all enabled features.
 - **Flexible topography:** use local GeoTIFF files first or download SRTMGL1/COP30 data from OpenTopography.
-- **Printable city mode:** add cached OpenStreetMap buildings, bridges, water bodies, conservative road matching, and flush route/water inlays to the terrain.
+- **Printable city mode:** add cached OpenStreetMap buildings, bridges, roads, water bodies, conservative road matching, and flush route/road/water inlays to the terrain.
 - **File or folder input:** convert one `.gpx`/`.fit` file or every supported activity file directly in a folder; files remain separate models.
 - **Square, circular, or hexagonal base:** automatically sized around every path in each input activity.
 - **Custom STL base:** preserve an existing model and use its highest flat top as the exact terrain shape.
@@ -137,7 +137,7 @@ python -m gpx2stl route.gpx --shape circle --max-size 180
 # Flat-top hexagonal model
 python -m gpx2stl route.gpx --shape hex
 
-# City model with buildings, bridge decks, a flush route inlay, and road matching within 5 m
+# City model with buildings, bridge decks, flush route/road inlays, and road matching within 5 m
 python -m gpx2stl route.gpx --mode city
 
 # City model with 10% north/south and 20% east/west route padding
@@ -196,7 +196,7 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 | `input_path` | required | Input `.gpx`/`.fit` file or directory. A directory converts each directly contained supported file independently and non-recursively. |
 | `--settings` | discovered | Explicit settings file path. Overrides `.gpx2stl.settings.json` discovery. |
 | `-o`, `--output` | input stem | Output file path for a file input, or an existing output directory for a directory input. |
-| `--mode` | `topo` | `topo` preserves the terrain-route model; `city` adds OSM buildings, road matching, and a flush route inlay. City mode requires topo and 3MF. |
+| `--mode` | `topo` | `topo` preserves the terrain-route model; `city` adds OSM buildings, a separate flush roads object, road matching, and a flush route inlay. City mode requires topo and 3MF. |
 | `--route-width` | city: `0.5` mm; otherwise: `1` mm | Printed route ribbon width. |
 | `--route-height` | city: `1.5` mm; otherwise: `2` mm | Route height above terrain in topo mode. City routes remain flush and use `--route-depth`. |
 | `--route-depth` | city: `1.5` mm; otherwise: `0.6` mm | Flush route inlay/cavity depth in city mode; must be smaller than the base height. |
@@ -248,7 +248,7 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 - Without topo, GPX or FIT altitude controls the route top at physical 1:20,000 vertical scale: 1,000 m becomes 50 mm. Internal missing elevations are interpolated; missing endpoint/all elevations are errors.
 - In city mode, route points are matched only to connected OSM road geometry within `--road-snap-distance`; implausible, disconnected, or out-of-range spans retain their GPX geometry. If matching would leave the printable footprint, the original route is used. Buildings that overlap an unmatched route remain complete and hide that route section.
 - City data uses a fixed 0.01° cache grid at every footprint size. Missing tiles are downloaded sequentially with at least two seconds between requests; cached tiles do not wait or contact the service.
-- City buildings use OSM `height`, then `building:levels × 3 m`, then `--building-default-height`. Bridge-tagged ways become printable decks using OSM width, lane-derived width, or a road/rail fallback. Heights use the horizontal model scale and `--building-height-scale`; roofs and bridge decks are flat. The default `5×` vertical multiplier keeps short structures visible on city-scale models; use `1` for true scale. The route is a separate 3MF object filling a matching terrain/base cavity with its top flush to the terrain.
+- City buildings use OSM `height`, then `building:levels × 3 m`, then `--building-default-height`. Bridge-tagged ways become printable decks using OSM width, lane-derived width, or a road/rail fallback. Heights use the horizontal model scale and `--building-height-scale`; roofs and bridge decks are flat. The default `5×` vertical multiplier keeps short structures visible on city-scale models; use `1` for true scale. Roads are combined into one separate flush `Roads` inlay using the route width and depth, clipped to the printable terrain. The route remains a separate 3MF object and takes material priority where it overlaps a road.
 - `--nozzle-diameter` is an optional geometry compensation, not a slicer setting. It offsets every building and bridge footprint outward by half the specified model-space diameter. Features narrower than the nozzle become wider, gaps and courtyards below the diameter close, and nearby structures join into printable same-material groups without overlapping volumes; taller structures own shared footprint area so grouped structures retain stepped roofs/decks. The progress log reports the equivalent source-meter offset at the current model scale. Compensation is clipped to the printable terrain boundary and does not reshape routes, water, terrain, or text, although an expanded structure can cover more of a route or water inlay. Omit the option (or use JSON `null`) to preserve the most detailed OSM geometry.
 - City water includes OSM lakes, ponds, reservoirs, basins, riverbanks, width-tagged or inferred rivers/streams/canals, and the sea-facing side of directed coastlines. It is clipped to the printable terrain and exported as a separate flush `Water` inlay; `--water-depth` controls its cavity depth. The route takes material priority where it crosses water.
 - In numeric boundary mode, square output is the smallest north-up square around the route before padding. Circle output uses the true minimum enclosing circle. Hex output uses the minimum translated flat-top regular hexagon. Search mode fits the eight-direction geographic selection polygon together with the route.
@@ -327,7 +327,7 @@ offset distance = text-boundary-percent / 100 × min(top width, top height)
 
 Without text, there is no text inset and terrain uses the full top. The GPX remains north-up. In numeric mode it is centered on the usable terrain; its maximum fitting scale reserves half the route width at the edges, then is divided by `1 + route_boundary_percent / 100` to add independent route padding. In search mode the entire eight-direction selection polygon and route ribbon are fitted together, recentering the geography and reducing scale as necessary. Containment is checked; incompatible concave edges or holes produce an explicit error rather than clipping the selection polygon or route. Changing route boundary leaves the terrain region and text band unchanged. The custom STL itself is never resized by `--max-size`. Final DEM bounds are derived from the terrain region.
 
-Custom STL fitting supports city mode. OSM buildings, roads, bridges, and water are clipped to the exact inset custom top; terrain/buildings follow that surface, and the flush route and water cavities are cut into the custom base. Route and water depths must be smaller than the custom base thickness. Custom fitting supports a scalar symmetric percentage, `auto`, or `search`; four directional values are rejected because the custom top has its own arbitrary outline. An omitted city boundary defaults to scalar `10`, explicit city `auto` uses scalar `5`, and explicit `search` performs terrain-aware discovery.
+Custom STL fitting supports city mode. OSM buildings, roads, bridges, and water are clipped to the exact inset custom top; terrain/buildings follow that surface, and the flush route, road, and water cavities are cut into the custom base. Route and water depths must be smaller than the custom base thickness. Custom fitting supports a scalar symmetric percentage, `auto`, or `search`; four directional values are rejected because the custom top has its own arbitrary outline. An omitted city boundary defaults to scalar `10`, explicit city `auto` uses scalar `5`, and explicit `search` performs terrain-aware discovery.
 
 When `--text` is supplied, the largest fitting glyph height is selected unless `--font-size` is set. The compact run stays tangent to the continuous perimeter and follows `--text-align`. The head/tail seam remains centered at the bottom and reserves eight font spaces plus `--text-end-gap` and any quoted leading/trailing spaces. `--text-margin` reserves the requested minimum clearance in millimeters from both the outer shape boundary and the inner terrain boundary. Every glyph must fit entirely in the remaining area. Increase `--text-boundary-percent`, reduce the font size, margins, or gap, shorten the text, or choose a narrower font if the border cannot contain it.
 
@@ -350,7 +350,7 @@ OpenTopography requires an API key and applies request/rate limits. API, authent
 
 ## Bambu Studio
 
-Import the generated 3MF as one object with multiple parts if prompted. The model contains only meaningful mesh objects from this list:
+Import the generated 3MF as one object with multiple parts if prompted. The top-level object is named after the output filename without its `.3mf` extension. The model contains only meaningful mesh objects from this list:
 
 1. `GPX route` / `Filament 1 - Route`
 2. `Topography` / `Filament 2 - Topography` when topo is enabled
@@ -358,8 +358,9 @@ Import the generated 3MF as one object with multiple parts if prompted. The mode
 4. `Base` / `Filament 4 - Base`
 5. `Buildings` / `Filament 5 - Buildings` in city mode
 6. `Water` / `Filament 6 - Water` when city water geometry is present
+7. `Roads` / `Filament 7 - Roads` when city road geometry is present
 
-Topo mode retains four material slots so the base consistently maps to filament 4. City mode adds the fifth building material and, when present, the sixth water material. Optional geometry is omitted when absent. Confirm or remap the parts to the desired AMS/filament slots before slicing.
+Topo mode retains four material slots so the base consistently maps to filament 4. City mode reserves the fifth and sixth slots before adding roads as filament 7, preserving existing building and water assignments. Optional geometry is omitted when absent. Confirm or remap the parts to the desired AMS/filament slots before slicing.
 
 ## Development
 
@@ -384,7 +385,7 @@ This project is licensed under the [MIT License](LICENSE). Terrain datasets rema
 - **默认输出 3MF：**包含可导入 Bambu Studio 的独立命名对象和材料。耗材 1 用于 GPX 路线，耗材 2 用于地形，耗材 3 用于可选文字，耗材 4 用于底座。
 - **可选输出 STL：**底座、路线和所有启用的功能合并为一个水密网格。
 - **灵活的真实地形：**优先使用本地 GeoTIFF，或通过 OpenTopography 下载 SRTMGL1/COP30 高程数据。
-- **可打印城市模式：**在地形上加入缓存的 OpenStreetMap 建筑、桥梁、水体、保守道路匹配以及齐平路线/水体嵌件。
+- **可打印城市模式：**在地形上加入缓存的 OpenStreetMap 建筑、桥梁、道路、水体、保守道路匹配以及齐平路线/道路/水体嵌件。
 - **文件或目录输入：**可转换一个 `.gpx`/`.fit` 文件，或目录中直接包含的所有受支持活动文件；不同文件始终生成独立模型。
 - **方形、圆形或六边形底座：**根据每个输入活动中的全部路径自动确定范围。
 - **自定义 STL 底座：**保留现有模型，并将其最高的平坦顶面作为精确地形外形。
@@ -514,7 +515,7 @@ python -m gpx2stl route.gpx --shape circle --max-size 180
 # 平顶正六边形模型
 python -m gpx2stl route.gpx --shape hex
 
-# 带建筑、齐平路线嵌件和默认 5 米道路匹配的城市模型
+# 带建筑、齐平路线/道路嵌件和默认 5 米道路匹配的城市模型
 python -m gpx2stl route.gpx --mode city
 
 # 北/南各 10%、东/西各 20% 路线边界的城市模型
@@ -619,6 +620,7 @@ python -m gpx2stl route.gpx --dem-type COP30 --force
 - 显式设置 `--terrain-height` 会覆盖真实比例，将 DEM 最低点到最高点的高度差归一化到指定毫米数。
 - 禁用地形时，路线顶部采用 GPX 或 FIT 高程和真实的 1:20,000 垂直比例：1,000 m 对应 50 mm。内部缺失高程会插值；端点或全部高程缺失会报错。
 - 城市模式会把带 OSM `bridge` 标记的道路、铁路和桥梁外形生成为可打印桥面。建筑和桥梁高度在水平地图比例之后默认放大 5 倍，以免较矮结构在城市尺度模型中消失；将 `building_height_scale` 设为 `1` 可恢复真实比例。
+- 城市道路会合并成一个独立、表面齐平的 `Roads` 嵌件，使用路线宽度和深度并裁剪到可打印地形。活动路线仍是独立 3MF 对象，并在与道路重叠处获得材质优先级。
 - `--nozzle-diameter` 是可选的几何补偿，而不是切片器设置。程序将每个建筑和桥面外形向外偏移指定模型直径的一半，使窄于喷嘴的特征变宽、关闭小于该直径的间隙和中庭，并让相邻结构连接为没有重叠体积的可打印同材质组；较高结构占用共享外形区域，因此组合后仍保留阶梯式屋顶/桥面。进度日志会按当前模型比例报告对应的源米制偏移。补偿结果会裁剪到可打印地形边界，不会重塑路线、水体、地形或文字，但扩大的结构可能覆盖更多路线或水体嵌件。省略该选项（或在 JSON 中设为 `null`）即可保留最详细的 OSM 几何。
 - 城市数据始终使用固定的 0.01° 缓存网格。缺失瓦片会依次下载，每次请求之间至少等待两秒；读取已有缓存瓦片时不会等待或访问服务。
 - 城市水体包括 OSM 湖泊、池塘、水库、流域、河岸，按标注或推断宽度生成的河流/溪流/运河，以及有向海岸线的临海一侧。水体会裁剪到可打印地形，并作为独立且表面齐平的 `Water` 嵌件输出；路线穿过水面时路线材料优先。
@@ -697,7 +699,7 @@ python -m gpx2stl route.gpx --route-boundary-percent search --auto-valley-max-re
 
 无文字时不进行文字内缩，地形使用完整顶面。GPX 保持正北朝上。数值模式以可用地形区域为中心，先求出在边缘预留半个路线宽度后的最大缩放，再除以 `1 + route_boundary_percent / 100`，以添加独立的路线边界。搜索模式将完整八方向选择多边形与路线带一起适配，按需重新定位地理中心并缩小比例。程序检查完整包含关系；与凹边或孔洞冲突时会明确报错，不会裁切选择多边形或路线。改变路线边界不会改变地形区域或文字带。自定义 STL 本身绝不会被 `--max-size` 缩放。最终 DEM 请求范围根据地形区域计算。
 
-自定义 STL 支持城市模式。OSM 建筑、道路、桥梁和水体会裁剪到精确的内缩自定义顶面；地形和建筑贴合该表面，齐平路线及水体凹槽直接切入自定义底座。路线及水体深度必须小于自定义底座厚度。自定义适配支持单个对称百分比、`auto` 或 `search`；由于自定义顶面可以是任意外形，四方向百分比会被明确拒绝。城市模式配合自定义底座且省略边界时默认使用标量 `10`，显式城市 `auto` 使用标量 `5`，显式 `search` 执行地形感知搜索。
+自定义 STL 支持城市模式。OSM 建筑、道路、桥梁和水体会裁剪到精确的内缩自定义顶面；地形和建筑贴合该表面，齐平路线、道路及水体凹槽直接切入自定义底座。路线及水体深度必须小于自定义底座厚度。自定义适配支持单个对称百分比、`auto` 或 `search`；由于自定义顶面可以是任意外形，四方向百分比会被明确拒绝。城市模式配合自定义底座且省略边界时默认使用标量 `10`，显式城市 `auto` 使用标量 `5`，显式 `search` 执行地形感知搜索。
 
 指定 `--text` 后，除非设置 `--font-size`，程序会选择可容纳的最大字高。紧凑文字段与连续边框路径相切，并遵循 `--text-align`。文字首尾接缝固定在底部中央，并保留八个字体空格、`--text-end-gap` 以及引号内首尾空格的总间距。`--text-margin` 可指定文字与外侧形状边界及内侧地形边界之间的最小毫米间距。每个字形都必须完整位于剩余区域内。如果空间不足，请增大 `--text-boundary-percent`，减小字高、文字边距或接缝，缩短文字或选择更窄的字体。
 
@@ -720,7 +722,7 @@ OpenTopography 要求 API Key，并有请求范围和频率限制。API、认证
 
 ## Bambu Studio
 
-导入生成的 3MF 时，如有提示请选择作为“一个对象的多个部件”载入。文件只包含下列具有实际几何体的对象：
+导入生成的 3MF 时，如有提示请选择作为“一个对象的多个部件”载入。顶层对象使用去掉 `.3mf` 扩展名后的输出文件名。文件只包含下列具有实际几何体的对象：
 
 1. `GPX route` / `Filament 1 - Route`
 2. 启用地形时包含 `Topography` / `Filament 2 - Topography`
@@ -728,8 +730,9 @@ OpenTopography 要求 API Key，并有请求范围和频率限制。API、认证
 4. `Base` / `Filament 4 - Base`
 5. 城市模式包含 `Buildings` / `Filament 5 - Buildings`
 6. 城市模式存在水体时包含 `Water` / `Filament 6 - Water`
+7. 城市模式存在道路时包含 `Roads` / `Filament 7 - Roads`
 
-地形模式保留四个材料槽位，因此底座始终映射到耗材 4；城市模式增加第五个建筑材料，并在存在水体时增加第六个水体材料。没有实际几何体的可选对象会被省略。切片前请确认各部件分别映射到正确的 AMS/耗材槽位。
+地形模式保留四个材料槽位，因此底座始终映射到耗材 4；城市模式在把道路添加为耗材 7 前保留第五和第六槽位，从而维持现有建筑和水体分配。没有实际几何体的可选对象会被省略。切片前请确认各部件分别映射到正确的 AMS/耗材槽位。
 
 ## 开发与测试
 

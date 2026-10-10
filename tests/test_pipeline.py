@@ -98,7 +98,15 @@ def test_city_conversion_loads_osm_matches_roads_and_exports_buildings(
         )
         return CityData(
             (CityBuilding(building, default_height),),
-            (LineString(route.paths[0]),),
+            (
+                LineString(route.paths[0]),
+                LineString(
+                    [
+                        (projected_clip.bounds[0], center.y),
+                        (projected_clip.bounds[2], center.y),
+                    ]
+                ),
+            ),
         )
 
     monkeypatch.setattr(gpx2stl.pipeline, "load_city_data", city_data)
@@ -121,7 +129,7 @@ def test_city_conversion_loads_osm_matches_roads_and_exports_buildings(
     )
 
     assert output.is_file()
-    assert any(message.startswith("Loaded 1 buildings and 1 roads") for message in messages)
+    assert any(message.startswith("Loaded 1 buildings and 2 roads") for message in messages)
     assert any(message.startswith("Road-matched ") for message in messages)
     assert any(
         message.startswith(
@@ -131,7 +139,8 @@ def test_city_conversion_loads_osm_matches_roads_and_exports_buildings(
         for message in messages
     )
     assert any(message.startswith("Generated buildings mesh") for message in messages)
-    assert "Writing 4-object, 5-material 3MF package" in messages
+    assert any(message.startswith("Generated roads mesh") for message in messages)
+    assert "Writing 5-object, 7-material 3MF package" in messages
 
 
 def test_conversion_reports_meaningful_progress(
