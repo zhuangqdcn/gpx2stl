@@ -21,7 +21,7 @@ from shapely import affinity
 from shapely.geometry import LineString, MultiPolygon, Point, Polygon
 
 from gpx2stl.custom_base import CustomBase
-from gpx2stl.city import CityBuilding
+from gpx2stl.city import CityBuilding, CityRoad
 from gpx2stl.dem import DemSource, fill_missing
 from gpx2stl.errors import Gpx2StlError
 from gpx2stl.footprint import footprint_vertices
@@ -1336,21 +1336,22 @@ def _water_mesh(
 
 
 def _road_mesh(
-    roads: tuple[LineString, ...],
+    roads: tuple[CityRoad, ...],
     route: ProjectedRoute,
     transform: ModelTransform,
     surface_height: HeightFunction,
-    width: float,
+    route_width: float,
     depth: float,
     printable_clip: Polygon,
+    road_width_scale: float,
     cavity_top: float | None = None,
 ) -> trimesh.Trimesh | None:
     if not roads:
         return None
     model_roads = shapely.unary_union(
         [
-            shapely.transform(road, transform.to_model).buffer(
-                width / 2.0,
+            shapely.transform(road.line, transform.to_model).buffer(
+                road.width_m * transform.scale * road_width_scale / 2.0,
                 cap_style="round",
                 join_style="round",
                 quad_segs=4,
@@ -1361,7 +1362,7 @@ def _road_mesh(
     model_route = shapely.unary_union(
         [
             LineString(transform.to_model(path)).buffer(
-                width / 2.0,
+                route_width / 2.0,
                 cap_style="round",
                 join_style="round",
                 quad_segs=4,
@@ -1418,7 +1419,7 @@ def build_geometry(
     dem: DemSource | None,
     custom_base: CustomBase | None = None,
     buildings: tuple[CityBuilding, ...] = (),
-    roads: tuple[LineString, ...] = (),
+    roads: tuple[CityRoad, ...] = (),
     water: tuple[Polygon, ...] = (),
 ) -> Geometry:
     raw_height = None if dem is None else _raw_height_function(dem, route, transform)
@@ -1540,6 +1541,7 @@ def build_geometry(
             config.route_width,
             config.route_depth,
             printable_clip,
+            config.road_width_scale,
         )
         road_cavity = _road_mesh(
             roads,
@@ -1549,6 +1551,7 @@ def build_geometry(
             config.route_width,
             config.route_depth,
             printable_clip,
+            config.road_width_scale,
             cavity_top,
         )
         if road_cavity is not None:

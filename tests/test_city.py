@@ -381,6 +381,7 @@ def test_projection_clips_buildings_and_roads_and_drops_outside() -> None:
                 3,
                 LineString([(-0.001, 0.001), (0.003, 0.001)]),
                 "residential",
+                6.0,
             ),
         ),
         bridges=(
@@ -400,13 +401,51 @@ def test_projection_clips_buildings_and_roads_and_drops_outside() -> None:
     assert projected.buildings[0].polygon.bounds == pytest.approx((0.0, 0.0, 200.0, 200.0))
     assert projected.buildings[0].height_m == 10.0
     assert len(projected.roads) == 1
-    assert projected.roads[0].bounds == pytest.approx(
+    assert projected.roads[0].line.bounds == pytest.approx(
         (0.0, 111.31949, 200.0, 111.31949)
     )
+    assert projected.roads[0].width_m == 6.0
     assert len(projected.bridges) == 1
     assert projected.bridges[0].polygon.bounds == pytest.approx(
         (0.0, 53.659745, 200.0, 57.659745)
     )
+
+
+@pytest.mark.parametrize(("tags", "expected"), [
+    ({"highway": "residential", "width": "8 m", "lanes": "4"}, 8.0),
+    ({"highway": "service", "width": "10'"}, 3.048),
+    ({"highway": "secondary", "lanes": "3"}, 9.6),
+    ({"highway": "motorway"}, 10.0),
+    ({"highway": "primary_link"}, 7.0),
+    ({"highway": "residential"}, 6.0),
+    ({"highway": "service"}, 3.0),
+    ({"highway": "footway"}, 2.5),
+    ({"highway": "unclassified"}, 5.0),
+    ({"highway": "service", "width": "-1", "lanes": "invalid"}, 3.0),
+])
+def test_osm_road_width_precedence_and_estimates(tags, expected) -> None:
+    document = {"elements": [{
+        "type": "way", "id": 1, "tags": tags,
+        "geometry": [{"lon": 0.0, "lat": 0.0}, {"lon": 0.001, "lat": 0.0}],
+    }]}
+    parsed = parse_city_data(document, default_height=10.0)
+    assert len(parsed.roads) == 1
+    assert parsed.roads[0].width_m == pytest.approx(expected)
+
+
+def test_clipped_road_parts_preserve_width() -> None:
+    geographic = GeographicCityData(
+        buildings=(),
+        roads=(GeographicRoad(
+            1, MultiLineString([
+                [(-0.001, 0.0005), (0.003, 0.0005)],
+                [(-0.001, 0.001), (0.003, 0.001)],
+            ]), "service", 3.5,
+        ),),
+    )
+    projected = project_city_data(geographic, _route(), box(0, 0, 200, 200))
+    assert len(projected.roads) == 2
+    assert [road.width_m for road in projected.roads] == [3.5, 3.5]
 
 
 def test_projection_creates_lakes_rivers_and_sea_from_coastline() -> None:

@@ -229,6 +229,13 @@ def convert(
     config: Config, progress: ProgressCallback = console_progress
 ) -> None:
     boundary = config.resolved_route_boundary_percent
+    if (
+        isinstance(config.road_width_scale, bool)
+        or not isinstance(config.road_width_scale, (int, float))
+        or not math.isfinite(config.road_width_scale)
+        or config.road_width_scale <= 0
+    ):
+        raise Gpx2StlError("Road width scale must be a finite number greater than zero.")
     if config.mode == "city" and not config.topo:
         raise Gpx2StlError("City mode requires topography.")
     if config.nozzle_diameter is not None:
@@ -407,7 +414,9 @@ def convert(
                 f"{len(city_data.water):,} water bodies"
             )
             matched_route = match_route_to_roads(
-                route, city_data.roads, config.road_snap_distance
+                route,
+                tuple(road.line for road in city_data.roads),
+                config.road_snap_distance,
             )
             if _route_fits_footprint(
                 matched_route,

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from itertools import product
 from pathlib import Path
 from types import SimpleNamespace
+import xml.etree.ElementTree as ET
+from zipfile import ZipFile
 
 import lib3mf
 import numpy as np
@@ -15,6 +18,7 @@ from shapely.geometry import LineString, MultiPoint, Polygon, box
 from shapely.ops import polygonize
 
 from gpx2stl.errors import Gpx2StlError
+from gpx2stl.city import CityRoad
 from gpx2stl.export import export_geometry
 from gpx2stl.footprint import (
     add_route_clearance,
@@ -23,12 +27,14 @@ from gpx2stl.footprint import (
 )
 from gpx2stl.gpx import interpolate_elevations, project_paths, read_gpx
 from gpx2stl.mesh import (
+    Geometry,
     _building_mesh,
     _compensate_structure_footprint,
     _font_properties,
     _generated_text_layout,
     _model_outline,
     _resolve_structure_overlaps,
+    _road_mesh,
     _structure_printable_clip,
     _variable_extrusion,
     build_geometry,
@@ -58,19 +64,191 @@ def _geometry(simple_gpx: Path, output: Path, use_3mf: bool):
     return build_geometry(route, footprint, transform, config, None), config
 
 
+def _assert_bambu_settings(output: Path, expected: dict[str, int]) -> None:
+    with ZipFile(output) as archive:
+        model = ET.fromstring(archive.read("3D/3dmodel.model"))
+        settings = ET.fromstring(archive.read("Metadata/model_settings.config"))
+        content_types = ET.fromstring(archive.read("[Content_Types].xml"))
+        relationships = ET.fromstring(archive.read("3D/_rels/3dmodel.model.rels"))
+        assert len(archive.namelist()) == len(set(archive.namelist()))
+        assert not any("project_settings" in name for name in archive.namelist())
+    assert any(
+        entry.get("Extension") == "config"
+        and entry.get("ContentType") == "application/xml"
+        for entry in content_types
+    )
+    assert any(
+        entry.get("Target") == "/Metadata/model_settings.config"
+        for entry in relationships
+    )
+    objects = {obj.get("id"): obj for obj in model.findall(".//{*}object")}
+    build = model.find("{*}build")
+    assert build is not None and len(build) == 1
+    assembly_id = build[0].get("objectid")
+    assembly = objects[assembly_id]
+    components = assembly.find("{*}components")
+    assert components is not None
+    assert settings.tag == "config" and len(settings) == 1
+    obj = settings[0]
+    assert obj.tag == "object" and obj.get("id") == assembly_id
+    assert obj.find("metadata").attrib == {
+        "key": "name", "value": output.stem,
+    }
+    parts = obj.findall("part")
+    assert [part.get("id") for part in parts] == [
+        component.get("objectid") for component in components
+    ]
+    assignments = {}
+    for part in parts:
+        assert part.get("subtype") == "normal_part"
+        mesh = objects[part.get("id")]
+        assert mesh.find("{*}mesh") is not None
+        metadata = {entry.get("key"): entry.get("value") for entry in part}
+        assert metadata["name"] == mesh.get("name")
+        filament = int(metadata["extruder"])
+        assignments[metadata["name"]] = filament
+        materials = model.find(f".//{{*}}basematerials[@id='{mesh.get('pid')}']")
+        assert materials is not None
+        assert materials[int(mesh.get("pindex"))].get("name").startswith(
+            f"Filament {filament} - "
+        )
+    assert assignments == expected
+
+
+@pytest.mark.parametrize(
+    "optional_parts", list(product((False, True), repeat=5))
+)
+def test_bambu_metadata_names_and_filaments_for_optional_parts(
+    tmp_path: Path, optional_parts: tuple[bool, ...],
+) -> None:
+    topography, text, buildings, water, roads = optional_parts
+    mesh = trimesh.creation.box()
+    geometry = Geometry(
+        base=mesh, route=mesh,
+        topography=mesh if topography else None,
+        text=mesh if text else None,
+        buildings=mesh if buildings else None,
+        water=mesh if water else None,
+        roads=mesh if roads else None,
+    )
+    output = tmp_path / "Morning & Evening 'Ride'.3mf"
+    config = Config(gpx_file=tmp_path / "unused.gpx", output=output)
+    export_geometry(geometry, config)
+    expected = {"GPX route": 1, "Base": 4}
+    for present, name, filament in zip(
+        optional_parts,
+        ("Topography", "Text", "Buildings", "Water", "Roads"),
+        (2, 3, 5, 6, 7),
+    ):
+        if present:
+            expected[name] = filament
+    _assert_bambu_settings(output, expected)
+
+
+@pytest.mark.parametrize("failure", ["missing", "corrupted", "write-error"])
+def test_bambu_metadata_failure_preserves_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str,
+) -> None:
+    output = tmp_path / "existing.3mf"
+    output.write_bytes(b"original destination")
+    mesh = trimesh.creation.box()
+    geometry = Geometry(base=mesh, route=mesh)
+    config = Config(gpx_file=tmp_path / "unused.gpx", output=output)
+    if failure == "missing":
+        monkeypatch.setattr(lib3mf.Reader, "AddRelationToRead", lambda *args: None)
+        message = "missing Bambu part metadata"
+    elif failure == "corrupted":
+        monkeypatch.setattr(
+            lib3mf.Attachment, "WriteToBuffer", lambda *args: list(b"<config/>")
+        )
+        message = "incorrect Bambu part metadata"
+    else:
+        def fail_write(*args):
+            raise RuntimeError("attachment write failed")
+        monkeypatch.setattr(lib3mf.Attachment, "ReadFromBuffer", fail_write)
+        message = "attachment write failed"
+    with pytest.raises(Gpx2StlError, match=message):
+        export_geometry(geometry, config)
+    assert output.read_bytes() == b"original destination"
+    assert list(tmp_path.iterdir()) == [output]
+
+
 def test_variable_extrusion_normalizes_microscopic_boundary_clearance() -> None:
     polygon = box(0.0, 0.0, 10.0, 10.0).difference(
         box(2.0, 1e-10, 8.0, 8.0)
     )
-
     mesh = _variable_extrusion(
         polygon,
         lambda points: np.zeros(len(points)),
         lambda points: np.ones(len(points)),
     )
-
     assert mesh.is_volume
     assert mesh.volume == pytest.approx(polygon.area, abs=1e-6)
+
+
+@pytest.mark.parametrize("scale", [0.01, 0.02])
+@pytest.mark.parametrize("multiplier", [0.5, 1.0, 3.0])
+@pytest.mark.parametrize("route_width", [0.1, 1.0])
+def test_road_width_uses_source_meters_and_multiplier_not_route_width(
+    simple_gpx: Path, scale: float, multiplier: float, route_width: float,
+) -> None:
+    route = project_paths(read_gpx(simple_gpx))
+    route = replace(route, paths=(np.array([[-100.0, 500.0], [100.0, 500.0]]),))
+    transform = ModelTransform(Footprint("square", np.zeros(2), 1000.0), scale)
+    road = CityRoad(LineString([(-100, 0), (100, 0)]), 6.0)
+    surface = lambda points: np.full(len(points), 2.0)
+    mesh = _road_mesh(
+        (road,), route, transform, surface, route_width, 0.6,
+        box(-10, -10, 10, 10), multiplier,
+    )
+    cavity = _road_mesh(
+        (road,), route, transform, surface, route_width, 0.6,
+        box(-10, -10, 10, 10), multiplier, cavity_top=3.0,
+    )
+    assert mesh is not None and cavity is not None
+    width = 6.0 * scale * multiplier
+    assert mesh.extents == pytest.approx((200 * scale + width, width, 0.6))
+    assert cavity.bounds[:, :2] == pytest.approx(mesh.bounds[:, :2])
+    assert mesh.is_watertight and cavity.is_watertight
+
+
+def test_road_width_clipping_and_route_priority(simple_gpx: Path) -> None:
+    route = replace(
+        project_paths(read_gpx(simple_gpx)),
+        paths=(np.array([[-100.0, 0.0], [100.0, 0.0]]),),
+    )
+    transform = ModelTransform(Footprint("square", np.zeros(2), 1000.0), 0.01)
+    road = CityRoad(LineString([(-100, 0), (100, 0)]), 20.0)
+    mesh = _road_mesh(
+        (road,), route, transform, lambda points: np.full(len(points), 2.0),
+        0.1, 0.6, box(-0.5, -0.5, 0.5, 0.5), 1.0,
+    )
+    assert mesh is not None and mesh.is_watertight
+    assert mesh.bounds[:, :2] == pytest.approx(
+        np.array([[-0.5, -0.1], [0.5, 0.1]])
+    )
+    assert len(mesh.split()) == 2
+    assert mesh.volume == pytest.approx(1.0 * (0.2 - 0.1) * 0.6)
+
+
+def test_road_mesh_preserves_distinct_road_widths(simple_gpx: Path) -> None:
+    route = replace(
+        project_paths(read_gpx(simple_gpx)),
+        paths=(np.array([[-100.0, 500.0], [100.0, 500.0]]),),
+    )
+    transform = ModelTransform(Footprint("square", np.zeros(2), 1000.0), 0.01)
+    roads = (
+        CityRoad(LineString([(-100, 0), (100, 0)]), 10.0),
+        CityRoad(LineString([(-100, 100), (100, 100)]), 2.5),
+    )
+    mesh = _road_mesh(
+        roads, route, transform, lambda points: np.full(len(points), 2.0),
+        1.0, 0.6, box(-10, -10, 10, 10), 1.0,
+    )
+    assert mesh is not None
+    components = sorted(mesh.split(), key=lambda part: part.centroid[1])
+    assert len(components) == 2
+    assert [part.extents[1] for part in components] == pytest.approx([0.1, 0.025])
 
 
 def test_nozzle_compensation_expands_and_groups_structure_footprints() -> None:
@@ -283,7 +461,7 @@ def test_city_geometry_has_flush_route_cavity_and_complete_building(
         config,
         SlopedDem(),
         buildings=(SimpleNamespace(polygon=polygon, height_m=10.0),),
-        roads=(road,),
+        roads=(CityRoad(road, 6.0),),
         water=(water_polygon,),
     )
 
@@ -317,6 +495,10 @@ def test_city_geometry_has_flush_route_cavity_and_complete_building(
     assert _mesh_material_ids(model)["Buildings"] == 5
     assert _mesh_material_ids(model)["Water"] == 6
     assert _mesh_material_ids(model)["Roads"] == 7
+    _assert_bambu_settings(config.output, {
+        "GPX route": 1, "Base": 4, "Topography": 2,
+        "Buildings": 5, "Water": 6, "Roads": 7,
+    })
 
 
 def test_hex_geometry_is_watertight(simple_gpx: Path, tmp_path: Path) -> None:
@@ -656,6 +838,7 @@ def test_3mf_round_trip_has_two_meshes_and_four_material_slots(
     assert _assembly_names(model) == {"Morning Ride"}
     assert _mesh_names(model) == {"Base", "GPX route"}
     assert _mesh_material_ids(model) == {"Base": 4, "GPX route": 1}
+    _assert_bambu_settings(output, {"Base": 4, "GPX route": 1})
     groups = model.GetBaseMaterialGroups()
     assert groups.MoveNext()
     group = groups.GetCurrentBaseMaterialGroup()
@@ -674,6 +857,7 @@ def test_3mf_with_text_has_three_meshes_and_four_material_slots(
     assert model.GetMeshObjects().Count() == 3
     assert _mesh_names(model) == {"Base", "GPX route", "Text"}
     assert _mesh_material_ids(model) == {"Base": 4, "GPX route": 1, "Text": 3}
+    _assert_bambu_settings(output, {"Base": 4, "GPX route": 1, "Text": 3})
     groups = model.GetBaseMaterialGroups()
     assert groups.MoveNext()
     group = groups.GetCurrentBaseMaterialGroup()
@@ -710,6 +894,9 @@ def test_3mf_with_topography_and_text_has_four_named_objects(
         "Text": 3,
         "Topography": 2,
     }
+    _assert_bambu_settings(output, {
+        "Base": 4, "GPX route": 1, "Text": 3, "Topography": 2,
+    })
     groups = model.GetBaseMaterialGroups()
     assert groups.MoveNext()
     group = groups.GetCurrentBaseMaterialGroup()

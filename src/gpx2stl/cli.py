@@ -24,6 +24,7 @@ SETTING_KEYS = {
     "route_height",
     "route_depth",
     "road_snap_distance",
+    "road_width_scale",
     "topo",
     "route_boundary_percent",
     "auto_boundary_max_distance_km",
@@ -320,6 +321,13 @@ def create_parser(settings: dict[str, Any] | None = None) -> argparse.ArgumentPa
         default=5.0,
         help="maximum OSM road matching distance in source meters; 0 disables matching "
         "(city mode; default: 5)",
+    )
+    parser.add_argument(
+        "--road-width-scale",
+        type=_positive,
+        default=1.0,
+        help="city road width multiplier relative to real-world scale "
+        "(OSM width, lane count, or road-class estimate; default: 1)",
     )
     parser.add_argument(
         "--topo",
@@ -695,6 +703,7 @@ def config_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser) 
         route_height=args.route_height,
         route_depth=args.route_depth,
         road_snap_distance=args.road_snap_distance,
+        road_width_scale=args.road_width_scale,
         topo=args.topo,
         route_boundary_percent=route_boundary,
         auto_boundary_max_distance_km=args.auto_boundary_max_distance_km,
@@ -848,6 +857,7 @@ def _validate_setting_types(
         "route_height",
         "route_depth",
         "road_snap_distance",
+        "road_width_scale",
         "auto_boundary_max_distance_km",
         "auto_valley_max_relief_m",
         "auto_valley_max_slope_percent",
@@ -917,6 +927,8 @@ def _validate_setting_types(
         parser.error("route dimensions must be greater than zero")
     if args.road_snap_distance < 0:
         parser.error("--road-snap-distance must be greater than or equal to zero")
+    if args.road_width_scale <= 0:
+        parser.error("--road-width-scale must be greater than zero")
     if args.building_default_height <= 0 or args.building_height_scale <= 0:
         parser.error("building dimensions must be greater than zero")
     if args.nozzle_diameter is not None:

@@ -6,6 +6,7 @@
   "route_height": 2.0,
   "route_depth": 0.6,
   "road_snap_distance": 5.0,
+  "road_width_scale": 1.0,
   "topo": true,
   "route_boundary_percent": "auto",
   "auto_boundary_max_distance_km": 10.0,

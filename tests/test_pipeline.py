@@ -10,7 +10,7 @@ from rasterio.transform import from_bounds
 from shapely.geometry import LineString, Point, Polygon, box
 
 import gpx2stl.pipeline
-from gpx2stl.city import CityBuilding, CityData
+from gpx2stl.city import CityBuilding, CityData, CityRoad
 from gpx2stl.dem import DemSource, GeographicBounds
 from gpx2stl.errors import Gpx2StlError
 from gpx2stl.models import Config, TopoSource
@@ -26,6 +26,16 @@ def _config(tmp_path: Path, source: TopoSource) -> Config:
         route_boundary_percent=10.0,
         topo_dir=tmp_path / "asset",
     )
+
+
+@pytest.mark.parametrize("value", [0, -1, float("inf"), float("nan"), True, "2"])
+def test_conversion_rejects_invalid_road_width_scale(tmp_path: Path, value) -> None:
+    config = Config(
+        gpx_file=tmp_path / "missing.gpx", output=tmp_path / "unused.3mf",
+        road_width_scale=value,
+    )
+    with pytest.raises(Gpx2StlError, match="Road width scale"):
+        convert(config, progress=lambda message: None)
 
 
 def test_conversion_uses_local_file_without_network(
@@ -99,12 +109,13 @@ def test_city_conversion_loads_osm_matches_roads_and_exports_buildings(
         return CityData(
             (CityBuilding(building, default_height),),
             (
-                LineString(route.paths[0]),
-                LineString(
-                    [
+                CityRoad(LineString(route.paths[0]), 6.0),
+                CityRoad(
+                    LineString([
                         (projected_clip.bounds[0], center.y),
                         (projected_clip.bounds[2], center.y),
-                    ]
+                    ]),
+                    6.0,
                 ),
             ),
         )
@@ -321,7 +332,7 @@ def test_city_conversion_supports_custom_stl_base(
 
     def city_data(bounds, cache_dir, route, projected_clip, default_height, **kwargs):
         clips.append(projected_clip)
-        return CityData((), (LineString(route.paths[0]),))
+        return CityData((), (CityRoad(LineString(route.paths[0]), 6.0),))
 
     monkeypatch.setattr(gpx2stl.pipeline, "load_city_data", city_data)
     output = tmp_path / "custom-city.3mf"

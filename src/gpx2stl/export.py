@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import lib3mf
@@ -14,6 +15,12 @@ from gpx2stl.models import Config
 from gpx2stl.progress import ProgressCallback, console_progress
 
 
+_BAMBU_SETTINGS_PATH = "/Metadata/model_settings.config"
+_BAMBU_SETTINGS_RELATIONSHIP = (
+    "https://github.com/zhuangqdcn/gpx2stl/relationships/bambu-model-settings"
+)
+
+
 def _color(red: int, green: int, blue: int) -> lib3mf.Color:
     color = lib3mf.Color()
     color.Red = red
@@ -23,7 +30,9 @@ def _color(red: int, green: int, blue: int) -> lib3mf.Color:
     return color
 
 
-def _add_mesh(model: object, mesh: trimesh.Trimesh, name: str) -> object:
+def _add_mesh(
+    model: lib3mf.Model, mesh: trimesh.Trimesh, name: str
+) -> lib3mf.MeshObject:
     mesh_object = model.AddMeshObject()
     mesh_object.SetName(name)
     vertices: list[lib3mf.Position] = []
@@ -42,6 +51,22 @@ def _add_mesh(model: object, mesh: trimesh.Trimesh, name: str) -> object:
         triangles.append(triangle)
     mesh_object.SetGeometry(vertices, triangles)
     return mesh_object
+
+
+def _bambu_model_settings(
+    assembly: lib3mf.ComponentsObject,
+    parts: list[tuple[lib3mf.MeshObject, int]],
+) -> bytes:
+    root = ET.Element("config")
+    obj = ET.SubElement(root, "object", id=str(assembly.GetResourceID()))
+    ET.SubElement(obj, "metadata", key="name", value=assembly.GetName())
+    for mesh, filament in parts:
+        part = ET.SubElement(
+            obj, "part", id=str(mesh.GetResourceID()), subtype="normal_part"
+        )
+        ET.SubElement(part, "metadata", key="name", value=mesh.GetName())
+        ET.SubElement(part, "metadata", key="extruder", value=str(filament))
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
 
 def _write_3mf(path: Path, geometry: Geometry, model_name: str) -> None:
@@ -87,6 +112,7 @@ def _write_3mf(path: Path, geometry: Geometry, model_name: str) -> None:
         assembly = model.AddComponentsObject()
         assembly.SetName(model_name)
         identity = wrapper.GetIdentityTransform()
+        parts = [(route, 1)]
         assembly.AddComponent(route, identity)
         if geometry.topography is not None:
             topography = _add_mesh(model, geometry.topography, "Topography")
@@ -95,10 +121,12 @@ def _write_3mf(path: Path, geometry: Geometry, model_name: str) -> None:
                 topography_material,
             )
             assembly.AddComponent(topography, identity)
+            parts.append((topography, 2))
         if geometry.text is not None:
             text = _add_mesh(model, geometry.text, "Text")
             text.SetObjectLevelProperty(materials.GetResourceID(), text_material)
             assembly.AddComponent(text, identity)
+            parts.append((text, 3))
         if geometry.buildings is not None:
             buildings = _add_mesh(model, geometry.buildings, "Buildings")
             assert building_material is not None
@@ -106,6 +134,7 @@ def _write_3mf(path: Path, geometry: Geometry, model_name: str) -> None:
                 materials.GetResourceID(), building_material
             )
             assembly.AddComponent(buildings, identity)
+            parts.append((buildings, 5))
         if geometry.water is not None:
             water = _add_mesh(model, geometry.water, "Water")
             assert water_material is not None
@@ -113,6 +142,7 @@ def _write_3mf(path: Path, geometry: Geometry, model_name: str) -> None:
                 materials.GetResourceID(), water_material
             )
             assembly.AddComponent(water, identity)
+            parts.append((water, 6))
         if geometry.roads is not None:
             roads = _add_mesh(model, geometry.roads, "Roads")
             assert road_material is not None
@@ -120,12 +150,22 @@ def _write_3mf(path: Path, geometry: Geometry, model_name: str) -> None:
                 materials.GetResourceID(), road_material
             )
             assembly.AddComponent(roads, identity)
+            parts.append((roads, 7))
         assembly.AddComponent(base, identity)
+        parts.append((base, 4))
         model.AddBuildItem(assembly, identity)
+        # Bambu reads part names and filament indices here, not from core resources.
+        settings = _bambu_model_settings(assembly, parts)
+        attachment = model.AddAttachment(
+            _BAMBU_SETTINGS_PATH, _BAMBU_SETTINGS_RELATIONSHIP
+        )
+        attachment.ReadFromBuffer(settings)
+        model.AddCustomContentType("config", "application/xml")
         model.QueryWriter("3mf").WriteToFile(str(path))
 
         check_model = wrapper.CreateModel()
         reader = check_model.QueryReader("3mf")
+        reader.AddRelationToRead(_BAMBU_SETTINGS_RELATIONSHIP)
         reader.ReadFromFile(str(path))
         mesh_count = check_model.GetMeshObjects().Count()
         material_groups = check_model.GetBaseMaterialGroups().Count()
@@ -150,6 +190,18 @@ def _write_3mf(path: Path, geometry: Geometry, model_name: str) -> None:
         ):
             raise Gpx2StlError(
                 f"3MF validation failed: expected model name '{model_name}'."
+            )
+        for index in range(check_model.GetAttachmentCount()):
+            attachment = check_model.GetAttachment(index)
+            if attachment.GetPath() == _BAMBU_SETTINGS_PATH:
+                if bytes(attachment.WriteToBuffer()) != settings:
+                    raise Gpx2StlError(
+                        "3MF validation failed: incorrect Bambu part metadata."
+                    )
+                break
+        else:
+            raise Gpx2StlError(
+                "3MF validation failed: missing Bambu part metadata."
             )
     except Gpx2StlError:
         raise

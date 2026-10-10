@@ -33,6 +33,7 @@ def test_cli_defaults(simple_gpx: Path, monkeypatch: pytest.MonkeyPatch) -> None
     assert config.route_height == 2.0
     assert config.route_depth == 0.6
     assert config.road_snap_distance == 5.0
+    assert config.road_width_scale == 1.0
     assert config.route_boundary_percent == "auto"
     assert config.resolved_route_boundary_percent == "search"
     assert config.auto_boundary_max_distance_km == 10.0
@@ -63,6 +64,27 @@ def test_cli_defaults(simple_gpx: Path, monkeypatch: pytest.MonkeyPatch) -> None
     assert config.nozzle_diameter is None
     assert config.water_depth == 0.4
     assert config.api_key == "test-key"
+
+
+def test_road_width_scale_settings_and_cli_precedence(simple_gpx: Path) -> None:
+    parser = create_parser({"road_width_scale": 2.5})
+    arguments = [str(simple_gpx), "--no-topo"]
+    assert config_from_args(parser.parse_args(arguments), parser).road_width_scale == 2.5
+    arguments += ["--road-width-scale", "0.75"]
+    assert config_from_args(parser.parse_args(arguments), parser).road_width_scale == 0.75
+
+
+@pytest.mark.parametrize("value", [0, -1, float("nan"), float("inf"), True, "invalid"])
+def test_invalid_road_width_scale_settings(simple_gpx: Path, value) -> None:
+    parser = create_parser({"road_width_scale": value})
+    with pytest.raises(SystemExit):
+        config_from_args(parser.parse_args([str(simple_gpx), "--no-topo"]), parser)
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "nan", "inf"])
+def test_invalid_road_width_scale_cli(value: str) -> None:
+    with pytest.raises(SystemExit):
+        create_parser().parse_args(["--road-width-scale", value])
 
 
 def test_no_topo_stl_does_not_require_key(simple_gpx: Path) -> None:

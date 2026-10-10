@@ -105,6 +105,13 @@ class GeographicRoad:
     osm_id: int
     line: Linear
     highway: str
+    width_m: float
+
+
+@dataclass(frozen=True)
+class CityRoad:
+    line: LineString
+    width_m: float
 
 
 @dataclass(frozen=True)
@@ -135,7 +142,7 @@ class GeographicCityData:
 @dataclass(frozen=True)
 class CityData:
     buildings: tuple[CityBuilding, ...]
-    roads: tuple[LineString, ...]
+    roads: tuple[CityRoad, ...]
     bridges: tuple[CityBuilding, ...] = ()
     water: tuple[Polygon, ...] = ()
 
@@ -546,7 +553,9 @@ def parse_city_data(
             ):
                 line = _way_line(element, nodes)
                 if line is not None:
-                    roads.append(GeographicRoad(osm_id, line, highway))
+                    roads.append(
+                        GeographicRoad(osm_id, line, highway, _road_width(tags))
+                    )
             if _is_bridge(tags):
                 bridge_geometry: Linear | Polygonal | None = None
                 if area in {"1", "true", "yes"} or tags.get("man_made") == "bridge":
@@ -632,13 +641,20 @@ def _waterway_width(tags: Mapping[str, Any]) -> float:
     }.get(str(tags.get("waterway")), 3.0)
 
 
-def _bridge_width(tags: Mapping[str, Any]) -> float:
+def _tagged_road_width(tags: Mapping[str, Any]) -> float | None:
     explicit = _parse_length(tags.get("width"))
     if explicit is not None:
         return explicit
     lanes = _positive_number(tags.get("lanes"))
     if lanes is not None:
         return max(3.0, lanes * 3.2)
+    return None
+
+
+def _bridge_width(tags: Mapping[str, Any]) -> float:
+    tagged = _tagged_road_width(tags)
+    if tagged is not None:
+        return tagged
     highway = tags.get("highway")
     if highway in {"motorway", "trunk"}:
         return 10.0
@@ -649,6 +665,29 @@ def _bridge_width(tags: Mapping[str, Any]) -> float:
     if tags.get("railway") is not None:
         return 5.0
     return 5.0
+
+
+def _road_width(tags: Mapping[str, Any]) -> float:
+    tagged = _tagged_road_width(tags)
+    if tagged is not None:
+        return tagged
+    highway = str(tags.get("highway", "")).removesuffix("_link")
+    return {
+        "motorway": 10.0,
+        "trunk": 10.0,
+        "primary": 7.0,
+        "secondary": 7.0,
+        "tertiary": 7.0,
+        "residential": 6.0,
+        "living_street": 4.0,
+        "pedestrian": 4.0,
+        "service": 3.0,
+        "track": 3.0,
+        "footway": 2.5,
+        "path": 2.5,
+        "cycleway": 2.5,
+        "steps": 2.5,
+    }.get(highway, 5.0)
 
 
 def _bridge_height(tags: Mapping[str, Any]) -> float:
@@ -856,12 +895,14 @@ def project_city_data(
                 CityBuilding(polygon, building.height_m)
                 for polygon in _individual_polygons(clipped)
             )
-    roads: list[LineString] = []
+    roads: list[CityRoad] = []
     for road in data.roads:
         projected = transform(route.forward.transform, road.line)
         clipped = _linear(projected.intersection(projected_clip))
         if clipped is not None:
-            roads.extend(_individual_lines(clipped))
+            roads.extend(
+                CityRoad(line, road.width_m) for line in _individual_lines(clipped)
+            )
     bridges: list[CityBuilding] = []
     for bridge in data.bridges:
         projected = transform(route.forward.transform, bridge.geometry)

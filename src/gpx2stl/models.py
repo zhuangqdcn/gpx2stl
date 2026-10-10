@@ -31,6 +31,7 @@ class Config:
     route_height: float = 2.0
     route_depth: float = 0.6
     road_snap_distance: float = 5.0
+    road_width_scale: float = 1.0
     topo: bool = True
     route_boundary_percent: RouteBoundaryPercent | None = None
     auto_boundary_max_distance_km: float = 10.0
